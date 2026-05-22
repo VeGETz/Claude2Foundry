@@ -4,7 +4,7 @@ Anthropic Messages API → Azure AI Foundry (OpenAI Chat Completions) proxy. Cla
 
 ## Proof it works
 
-This README and the entire codebase were written by **DeepSeek-V3** running behind the proxy, exposed to Claude Code as `claude-opus-4-7`. If you're reading this, the proxy is doing its job.
+This README and the entire codebase were written by **DeepSeek-V4-Pro** running behind the proxy, exposed to Claude Code as `claude-opus-4-7`. If you're reading this, the proxy is doing its job.
 
 ```
 Claude Code (thinks it's Opus 4.7)
@@ -13,7 +13,7 @@ Claude Code (thinks it's Opus 4.7)
 Claude2Foundry (:8787)   ← translates Anthropic ↔ OpenAI
     │  OpenAI Chat Completions
     ▼
-Azure Foundry (DeepSeek-V3, o4-mini, etc.)
+Azure Foundry (DeepSeek-V4-Pro, GPT-5.4-mini, etc.)
 ```
 
 ## How it works
@@ -27,7 +27,7 @@ Anthropic Messages API  ──►  :8787/v1/messages  ──►  OpenAI Chat Com
 - Accepts Anthropic Messages API requests on `http://127.0.0.1:8787`
 - Translates to OpenAI Chat Completions format for Azure Foundry backend
 - Streams SSE responses back in Anthropic format
-- Maps model names (e.g. `claude-opus-4-7` → `o4-mini`)
+- Maps model names (e.g. `claude-opus-4-7` → `GPT-5.4-mini`)
 
 ## Quick start
 
@@ -60,20 +60,20 @@ All config lives in `src/Claude2Foundry/appsettings.json` under the `Proxy` sect
   "Proxy": {
     "BackendUrl": "https://my-resource.openai.azure.com/openai/v1/",
     "ApiKeyEnv": "FOUNDRY_API_KEY",
-    "DefaultModel": "DeepSeek-V3",
+    "DefaultModel": "DeepSeek-V4-Pro",
     "ModelAliases": {
-      "claude-opus-4-7": "o4-mini",
-      "claude-sonnet-4-6": "DeepSeek-V3",
-      "claude-haiku-4-5": "DeepSeek-V3"
+      "claude-opus-4-7": "GPT-5.4-mini",
+      "claude-sonnet-4-6": "DeepSeek-V4-Pro",
+      "claude-haiku-4-5": "DeepSeek-V4-Pro"
     },
     "ReasoningPolicies": {
-      "DeepSeek-V3": "none",
+      "DeepSeek-V4-Pro": "none",
       "DeepSeek-R1": "passthrough",
-      "o4-mini": "effort"
+      "GPT-5.4-mini": "effort"
     },
     "Tokenizers": {
-      "DeepSeek-V3": { "Source": "TiktokenCl100k" },
-      "o4-mini": { "Source": "TiktokenO200k" }
+      "DeepSeek-V4-Pro": { "Source": "TiktokenCl100k" },
+      "GPT-5.4-mini": { "Source": "TiktokenO200k" }
     },
     "Timeouts": {
       "OutboundTotalSeconds": 600,
@@ -107,14 +107,14 @@ The Foundry model deployment name to use when no alias matches. If Claude Code s
 
 ### `ModelAliases`
 
-Maps Anthropic model names (the ones Claude Code sends) to Foundry deployment names. This is how you trick Claude Code — it requests `claude-opus-4-7`, the proxy translates that to `o4-mini` or whatever you configure.
+Maps Anthropic model names (the ones Claude Code sends) to Foundry deployment names. This is how you trick Claude Code — it requests `claude-opus-4-7`, the proxy translates that to `GPT-5.4-mini` or whatever you configure.
 
 ```json
 "ModelAliases": {
-  "claude-opus-4-7": "o4-mini",
-  "claude-sonnet-4-6": "DeepSeek-V3",
-  "claude-haiku-4-5": "DeepSeek-V3",
-  "claude-3-5-haiku": "DeepSeek-V3"
+  "claude-opus-4-7": "GPT-5.4-mini",
+  "claude-sonnet-4-6": "DeepSeek-V4-Pro",
+  "claude-haiku-4-5": "DeepSeek-V4-Pro",
+  "claude-3-5-haiku": "DeepSeek-V4-Pro"
 }
 ```
 
@@ -126,15 +126,15 @@ Controls how the proxy handles thinking/reasoning blocks when translating betwee
 
 | Policy | Behavior |
 |--------|----------|
-| `none` | Strip all thinking blocks entirely. Use for models that don't support reasoning (e.g. DeepSeek-V3, GPT-4.1). The model still sees the conversation, but thinking content is removed from both request and response. |
+| `none` | Strip all thinking blocks entirely. Use for models that don't support reasoning (e.g. DeepSeek-V4-Pro, GPT-4.1). The model still sees the conversation, but thinking content is removed from both request and response. |
 | `passthrough` | Forward thinking blocks as-is in both directions. Use for models that natively produce reasoning tokens as part of their output (e.g. DeepSeek-R1). The thinking text appears inline in the message content. |
-| `effort` | Map Anthropic's `thinking.budget_tokens` to OpenAI's `reasoning_effort` parameter (`low`/`medium`/`high`). Use for models that support the OpenAI reasoning API (e.g. o4-mini, o3-mini). Mapping: budget < 2000 → `low`, 2000–8000 → `medium`, > 8000 → `high`. |
+| `effort` | Map Anthropic's `thinking.budget_tokens` to OpenAI's `reasoning_effort` parameter (`low`/`medium`/`high`). Use for models that support the OpenAI reasoning API (e.g. GPT-5.4-mini, o3-mini). Mapping: budget < 2000 → `low`, 2000–8000 → `medium`, > 8000 → `high`. |
 
 **How to pick:**
 
-- **Standard chat model** (GPT-4, DeepSeek-V3, etc.) → `none`
+- **Standard chat model** (GPT-4, DeepSeek-V4-Pro, etc.) → `none`
 - **DeepSeek-R1-style reasoning model** that outputs thinking inline → `passthrough`
-- **OpenAI reasoning model** (o4-mini, o3-mini) that uses `reasoning_effort` → `effort`
+- **OpenAI reasoning model** (GPT-5.4-mini, o3-mini) that uses `reasoning_effort` → `effort`
 
 ### `Tokenizers`
 
@@ -142,8 +142,8 @@ The proxy exposes Anthropic's `/v1/messages/count_tokens` endpoint. To count tok
 
 | Source | What it loads | Use for |
 |--------|---------------|---------|
-| `TiktokenCl100k` | GPT-4 tiktoken (cl100k_base) | DeepSeek-V3, GPT-4, GPT-3.5 |
-| `TiktokenO200k` | GPT-4o tiktoken (o200k_base) | o4-mini, o3-mini, GPT-4.1 |
+| `TiktokenCl100k` | GPT-4 tiktoken (cl100k_base) | DeepSeek-V4-Pro, GPT-4, GPT-3.5 |
+| `TiktokenO200k` | GPT-4o tiktoken (o200k_base) | GPT-5.4-mini, o3-mini, GPT-4.1 |
 | `HuggingFace` | SentencePiece/Llama `.model` file | Custom or local models |
 
 For `HuggingFace`, also specify a `Path` pointing to the `.model` file:
@@ -192,7 +192,7 @@ For `HuggingFace`, also specify a `Path` pointing to the `.model` file:
 
 ## Disclaimer
 
-> **This entire project — every line of code, documentation, and configuration — was generated by AI (DeepSeek-V3, routed through Claude2Foundry itself).**
+> **This entire project — every line of code, documentation, and configuration — was generated by AI (DeepSeek-V4-Pro, routed through Claude2Foundry itself).**
 >
 > No human wrote a single line. The proxy was built by the very model it's designed to front.
 >
