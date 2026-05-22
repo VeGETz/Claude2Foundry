@@ -16,6 +16,19 @@ Claude2Foundry (:8787)   ← translates Anthropic ↔ OpenAI
 Azure Foundry (DeepSeek-V3, o4-mini, etc.)
 ```
 
+## How it works
+
+```
+Claude Code                     Claude2Foundry                  Azure Foundry
+Anthropic Messages API  ──►  :8787/v1/messages  ──►  OpenAI Chat Completions
+     SSE events          ◄──  (translate)          ◄──  (translate)
+```
+
+- Accepts Anthropic Messages API requests on `http://127.0.0.1:8787`
+- Translates to OpenAI Chat Completions format for Azure Foundry backend
+- Streams SSE responses back in Anthropic format
+- Maps model names (e.g. `claude-opus-4-7` → `o4-mini`)
+
 ## Quick start
 
 ```bash
