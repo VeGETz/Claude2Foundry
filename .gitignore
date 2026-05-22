@@ -1,0 +1,54 @@
+# vLLM reference (read-only, not built)
+vllm/
+
+# .NET build artifacts
+[Oo]bj/
+[Bb]in/
+*.user
+.vs/
+.idea/
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# Publish output
+publish/
+
+# Test results
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+coverage*/
+
+# .NET runtime artifacts
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+!Claude2Foundry.exe
+
+# ASP.NET
+wwwroot/
+appsettings.Development.json
+appsettings.local.json
+
+# Rider / VS Code
+.vscode/
+*.DotSettings.user
+
+# OS
+.DS_Store
+Thumbs.db
