@@ -52,3 +52,10 @@ appsettings.local.json
 # OS
 .DS_Store
 Thumbs.db
+
+# UI scaffold
+ui/node_modules/
+ui/dist/
+
+# Track the embedded static dir placeholder but not its build output
+!wwwroot/_ui/.gitkeep

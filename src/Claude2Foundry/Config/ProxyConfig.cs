@@ -9,6 +9,7 @@ public sealed record ProxyConfig
     public Dictionary<string, string> ReasoningPolicies { get; init; } = [];
     public Dictionary<string, TokenizerConfig> Tokenizers { get; init; } = [];
     public TimeoutsConfig Timeouts { get; init; } = new();
+    public MonitorConfig Monitor { get; init; } = new();
 }
 
 public sealed record TokenizerConfig
@@ -21,4 +22,11 @@ public sealed record TimeoutsConfig
 {
     public int OutboundTotalSeconds { get; init; } = 600;
     public int StreamIdleSeconds { get; init; } = 60;
+}
+
+public sealed record MonitorConfig
+{
+    public string CaptureMode { get; init; } = "hybrid";
+    public long LogMaxBytes { get; init; } = 100 * 1024 * 1024;
+    public int LogRetentionDays { get; init; } = 7;
 }

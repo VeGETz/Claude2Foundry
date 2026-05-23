@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
+using Claude2Foundry.Admin;
 using Claude2Foundry.Backend;
 using Claude2Foundry.Config;
 using Claude2Foundry.Errors;
@@ -64,9 +65,16 @@ try { _ = app.Services.GetRequiredService<ProxyConfig>(); }
 catch (Exception ex) { app.Logger.LogCritical(ex, "Startup failed"); Environment.Exit(1); }
 
 app.UseMiddleware<CorrelationIdMiddleware>();
+app.UseWhen(
+    ctx => ctx.Request.Path.StartsWithSegments("/api/admin"),
+    adminBranch => adminBranch.UseMiddleware<CorsAndCsrfGuard>());
 LogStartupBanner(app, builder.Configuration);
 
 app.MapGet("/health", () => Results.Text("ok"));
+app.MapGet("/_ui/{**path}", () => Results.NotFound());
+
+var adminGroup = app.MapGroup("/api/admin");
+AdminApi.Map(adminGroup);
 
 app.MapPost("/v1/messages/count_tokens", async (HttpContext ctx, TokenCounter counter) =>
 {
