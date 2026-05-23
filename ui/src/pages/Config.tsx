@@ -11,7 +11,7 @@ import { SchemaForm } from '../components/SchemaForm/SchemaForm'
 import { useApp } from '../App'
 
 function deepSet(obj: Record<string, FormValue>, path: string, value: FormValue): Record<string, FormValue> {
-  if (!path) return value as Record<string, FormValue>
+  if (!path) return obj
   const parts = path.split('.')
   const clone = { ...obj }
   if (parts.length === 1) {

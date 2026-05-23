@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { SseClient } from '../api/events'
-import type { RequestSummaryFull, CaptureModeResponse } from '../api/contracts'
+import type { RequestSummaryFull, RequestSnapshotRecord, CaptureModeResponse } from '../api/contracts'
 import { adminFetch } from '../api/client'
 import { RequestRow } from '../components/RequestRow'
 import { RequestDrawer } from '../components/RequestDrawer'
@@ -26,10 +26,12 @@ function blankRecord(): RequestSummaryFull {
 export function Monitor() {
   const { addToast } = useApp()
   const [records, setRecords] = useState<RequestSummaryFull[]>([])
+  const [anthropicCache, setAnthropicCache] = useState<Record<string, unknown>>({})
   const [selected, setSelected] = useState<RequestSummaryFull | null>(null)
   const [paused, setPaused] = useState(false)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('any')
   const [modelFilter, setModelFilter] = useState<string[]>([])
+  const [errorOnly, setErrorOnly] = useState(false)
   const [captureMode, setCaptureMode] = useState<'hybrid' | 'full'>('hybrid')
   const clientRef = useRef<SseClient | null>(null)
   const lastIdKey = 'c2f-monitor-last-id'
@@ -57,7 +59,7 @@ export function Monitor() {
     client
       .on('replay.snapshot', e => {
         setRecords(
-          (e.records as unknown[]).map(r => ({ ...blankRecord(), ...(r as Partial<RequestSummaryFull>) }))
+          (e.records as RequestSnapshotRecord[]).map(r => ({ ...blankRecord(), ...r }))
         )
       })
       .on('request.received', e => {
@@ -88,6 +90,9 @@ export function Monitor() {
       })
       .on('response.sent', e => {
         upsert({ id: e.id, elapsedMs: e.elapsedMs, status: 'complete', phase: 'complete' })
+        if (e.anthropicAssembled != null) {
+          setAnthropicCache(prev => ({ ...prev, [e.id]: e.anthropicAssembled }))
+        }
         sessionStorage.setItem(lastIdKey, Date.now().toString())
       })
       .on('error', e => {
@@ -121,6 +126,7 @@ export function Monitor() {
   const filtered = records.filter(r => {
     if (statusFilter !== 'any' && r.status !== statusFilter) return false
     if (modelFilter.length > 0 && !modelFilter.includes(r.originalModel)) return false
+    if (errorOnly && r.error === null && r.status !== 'error') return false
     return true
   })
 
@@ -151,6 +157,14 @@ export function Monitor() {
               </select>
             </label>
           )}
+          <label style="white-space:nowrap">
+            <input
+              type="checkbox"
+              checked={errorOnly}
+              onChange={e => setErrorOnly((e.target as HTMLInputElement).checked)}
+            />
+            Errors only
+          </label>
         </div>
         <div class="monitor-actions">
           <button class="outline small" onClick={() => setPaused(p => !p)}>
@@ -190,7 +204,11 @@ export function Monitor() {
         </table>
       </div>
       {selected && (
-        <RequestDrawer record={selected} onClose={() => setSelected(null)} />
+        <RequestDrawer
+          record={selected}
+          anthropicAssembledCache={anthropicCache[selected.id] ?? null}
+          onClose={() => setSelected(null)}
+        />
       )}
     </div>
   )

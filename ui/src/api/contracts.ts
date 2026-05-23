@@ -112,8 +112,20 @@ export interface AdminError {
 
 // ---- SSE event payloads (camelCase — mirrors sse-events.md) ----------------
 
+export interface RequestSnapshotRecord {
+  id: string
+  ts: string
+  originalModel: string
+  resolvedModel: string
+  status: 'received' | 'translated' | 'foundry-sent' | 'streaming' | 'complete' | 'error'
+  elapsedMs: number | null
+  usage: { input: number; output: number } | null
+  error: string | null
+  phase: string
+}
+
 export interface ReplaySnapshotEvent {
-  records: RequestSummary[]
+  records: RequestSnapshotRecord[]
 }
 
 export interface RequestSummary {
@@ -221,6 +233,10 @@ export interface RequestFullBody {
   anthropicBody: unknown | null
   openaiBody: unknown | null
   responseBody: unknown | null
+  /** Contract amendment authorized by Tech Lead — pending backend impl in phase 1 PR;
+   *  GET /api/admin/events/full/{id} will surface this once Engineer A updates
+   *  the FullBodyCache/JSONL reader. Until then, null for historical entries. */
+  anthropicAssembled: unknown | null
   headers: Record<string, string>
 }
 
