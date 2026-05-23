@@ -6,7 +6,7 @@ settings:
 
 importers:
 
-  .:
+  ui:
     dependencies:
       preact:
         specifier: ^10.25.4

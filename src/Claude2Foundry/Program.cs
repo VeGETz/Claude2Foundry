@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Claude2Foundry.Admin;
 using Claude2Foundry.Backend;
 using Claude2Foundry.Config;
@@ -57,12 +58,18 @@ builder.Services.AddSingleton<TokenCounter>();
 builder.Services.ConfigureHttpJsonOptions(opts =>
 {
     opts.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonSerializerContext.Default);
+    opts.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+    opts.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
 });
 
 var app = builder.Build();
 
 try { _ = app.Services.GetRequiredService<ProxyConfig>(); }
 catch (Exception ex) { app.Logger.LogCritical(ex, "Startup failed"); Environment.Exit(1); }
+
+DataDirResolver.ResolveDataDir(
+    app.Environment,
+    app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Claude2Foundry.Config.DataDirResolver"));
 
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseWhen(

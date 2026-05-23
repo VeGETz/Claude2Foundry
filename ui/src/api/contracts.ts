@@ -1,35 +1,35 @@
 // Frozen phase-0 contract types — extend only, never delete or rename.
 
-// ---- Config ----------------------------------------------------------------
+// ---- Config (PascalCase — mirrors appsettings.json / json-schema.md) -------
 
 export interface ProxyConfig {
-  backendUrl: string
-  apiKeyEnv: string
-  defaultModel: string
-  modelAliases: Record<string, string>
-  reasoningPolicies: Record<string, 'none' | 'passthrough' | 'effort'>
-  tokenizers: Record<string, TokenizerConfig>
-  timeouts: TimeoutsConfig
-  monitor: MonitorConfig
+  BackendUrl: string
+  ApiKeyEnv: string
+  DefaultModel: string
+  ModelAliases: Record<string, string>
+  ReasoningPolicies: Record<string, 'none' | 'passthrough' | 'effort'>
+  Tokenizers: Record<string, TokenizerConfig>
+  Timeouts: TimeoutsConfig
+  Monitor: MonitorConfig
 }
 
 export interface TokenizerConfig {
-  source: 'TiktokenCl100k' | 'TiktokenO200k' | 'HuggingFace'
-  path?: string
+  Source: 'TiktokenCl100k' | 'TiktokenO200k' | 'HuggingFace'
+  Path?: string
 }
 
 export interface TimeoutsConfig {
-  outboundTotalSeconds: number
-  streamIdleSeconds: number
+  OutboundTotalSeconds: number
+  StreamIdleSeconds: number
 }
 
 export interface MonitorConfig {
-  captureMode: 'hybrid' | 'full'
-  logMaxBytes: number
-  logRetentionDays: number
+  CaptureMode: 'hybrid' | 'full'
+  LogMaxBytes: number
+  LogRetentionDays: number
 }
 
-// ---- API responses ---------------------------------------------------------
+// ---- API responses (camelCase — mirrors http-routes.md) --------------------
 
 export interface ConfigResponse {
   proxy: ProxyConfig
@@ -97,6 +97,7 @@ export interface CaptureModeRequest {
 export interface CaptureModeResponse {
   ok: boolean
   mode: string
+  scope: string
 }
 
 // ---- Error -----------------------------------------------------------------
@@ -109,7 +110,7 @@ export interface AdminError {
   }
 }
 
-// ---- SSE event payloads ----------------------------------------------------
+// ---- SSE event payloads (camelCase — mirrors sse-events.md) ----------------
 
 export interface ReplaySnapshotEvent {
   records: RequestSummary[]
