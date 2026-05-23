@@ -12,6 +12,8 @@ using Claude2Foundry.Protocol.Anthropic;
 using Claude2Foundry.Protocol.OpenAI;
 using Claude2Foundry.Tokens;
 using Claude2Foundry.Translation;
+using Microsoft.AspNetCore.StaticFiles;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -71,6 +73,7 @@ builder.Services.AddSingleton<TokenCounter>();
 // --- Admin + Monitor services ---
 builder.Services.AddKeyedSingleton<string>("dataDir", dataDir);
 builder.Services.AddSingleton<ConfigWriter>();
+builder.Services.AddSingleton<IExitSink, EnvironmentExitSink>();
 builder.Services.AddSingleton<RestartCoordinator>();
 builder.Services.AddSingleton<FoundryHealthProbe>();
 builder.Services.AddSingleton<FullBodyCache>();
@@ -141,7 +144,25 @@ app.MapGet("/health", async (FoundryHealthProbe probe, CancellationToken ct) =>
     return Results.Text(status.Reachable ? "ok" : "degraded");
 });
 
-app.MapGet("/_ui/{**path}", () => Results.NotFound());
+ManifestEmbeddedFileProvider? uiProvider = null;
+try { uiProvider = new ManifestEmbeddedFileProvider(typeof(Program).Assembly, "wwwroot/_ui"); }
+catch { /* UI not embedded; /_ui/ returns 404 until next build with embedded assets */ }
+var mimeMap = new FileExtensionContentTypeProvider();
+
+app.MapGet("/_ui/{**path}", async (HttpContext ctx, string? path) =>
+{
+    if (uiProvider is null) return Results.NotFound();
+    var requested = string.IsNullOrEmpty(path) ? "index.html" : path;
+    var file = uiProvider.GetFileInfo(requested);
+    if (!file.Exists) file = uiProvider.GetFileInfo("index.html"); // SPA fallback
+    if (!file.Exists) return Results.NotFound();
+    if (!mimeMap.TryGetContentType(file.Name, out var contentType))
+        contentType = "application/octet-stream";
+    ctx.Response.ContentType = contentType;
+    await using var stream = file.CreateReadStream();
+    await stream.CopyToAsync(ctx.Response.Body);
+    return Results.Empty;
+});
 
 app.MapPost("/v1/messages/count_tokens", async (
     HttpContext ctx,

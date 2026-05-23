@@ -43,6 +43,16 @@ export ANTHROPIC_BASE_URL="http://127.0.0.1:8787"
 export ANTHROPIC_API_KEY="anything"  # not used by proxy, just has to be set
 ```
 
+
+## Adapter Console
+
+A local web UI for monitoring and config lives at http://127.0.0.1:8787/_ui/.
+- Monitor every request transiting the adapter in real time.
+- Edit config without touching JSON files; saves to `<datadir>/appsettings.local.json`.
+- Optionally use the `c2f.sh` / `c2f.cmd` wrapper for one-click restart from the UI.
+
+See [docs/specs/admin-ui/](docs/specs/admin-ui/) for the full spec.
+
 ## Endpoints
 
 | Endpoint | Method | Description |
