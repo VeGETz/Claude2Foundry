@@ -143,8 +143,12 @@ app.MapGet("/health", async (FoundryHealthProbe probe, CancellationToken ct) =>
 
 app.MapGet("/_ui/{**path}", () => Results.NotFound());
 
-app.MapPost("/v1/messages/count_tokens", async (HttpContext ctx, TokenCounter counter) =>
+app.MapPost("/v1/messages/count_tokens", async (
+    HttpContext ctx,
+    TokenCounter counter,
+    RestartCoordinator restartCoordinator) =>
 {
+    using var _ = restartCoordinator.TrackRequest();
     var correlationId = ctx.GetCorrelationId();
     var logger = ctx.RequestServices.GetRequiredService<ILogger<Program>>();
 
@@ -173,10 +177,13 @@ app.MapPost("/v1/messages", async (
     ResponseTranslator respT,
     StreamTranslator streamT,
     FoundryClient foundry,
-    ProxyConfig cfg,
+    IOptionsMonitor<ProxyConfig> optionsMonitor,
     IRequestCaptureSink sink,
+    RestartCoordinator restartCoordinator,
     ILogger<Program> logger) =>
 {
+    using var _ = restartCoordinator.TrackRequest();
+    var snapshot = optionsMonitor.CurrentValue;
     var correlationId = ctx.GetCorrelationId();
     var sw = Stopwatch.StartNew();
     var ct = ctx.RequestAborted;
@@ -208,7 +215,7 @@ app.MapPost("/v1/messages", async (
 
     ChatCompletionRequest openaiReq;
     string resolvedTarget;
-    try { (openaiReq, resolvedTarget) = reqT.Translate(req); }
+    try { (openaiReq, resolvedTarget) = reqT.Translate(req, snapshot); }
     catch (AdapterException ex)
     {
         sink.Emit(new CaptureErrorEvent(correlationId, "translation", "Adapter", ex.Message));
@@ -223,7 +230,7 @@ app.MapPost("/v1/messages", async (
         logger.LogDebug("req={CorrelationId} OpenAI request: {Body}", correlationId,
             JsonSerializer.Serialize(openaiReq, AppJsonSerializerContext.Default.ChatCompletionRequest));
 
-    var idleTimeout = TimeSpan.FromSeconds(cfg.Timeouts.StreamIdleSeconds);
+    var idleTimeout = TimeSpan.FromSeconds(snapshot.Timeouts.StreamIdleSeconds);
     int chunkSeq = 0;
 
     if (req.Stream == true)
@@ -261,7 +268,7 @@ app.MapPost("/v1/messages", async (
         {
             if (hasFirst)
             {
-                await foreach (var frame in streamT.Translate(Reattach(enumerator.Current, enumerator, ct), req, resolvedTarget, ct))
+                await foreach (var frame in streamT.Translate(Reattach(enumerator.Current, enumerator, ct), req, resolvedTarget, ct, snapshot))
                 {
                     // Emit foundry.chunk for each SSE frame (best effort, parse delta from frame)
                     sink.Emit(new FoundryChunkEvent(correlationId, chunkSeq++, null, null, null));
@@ -322,7 +329,7 @@ app.MapPost("/v1/messages", async (
             logger.LogError(ex, "req={CorrelationId} Outbound timeout", correlationId);
             sink.Emit(new CaptureErrorEvent(correlationId, "foundry-sent", "Adapter", "timeout"));
             sink.Finalize(correlationId);
-            return ErrorResult(ErrorMapping.AdapterError("api_error", $"Adapter timeout after {cfg.Timeouts.OutboundTotalSeconds}s"), 500, ctx);
+            return ErrorResult(ErrorMapping.AdapterError("api_error", $"Adapter timeout after {snapshot.Timeouts.OutboundTotalSeconds}s"), 500, ctx);
         }
         catch (Exception ex)
         {
@@ -344,7 +351,7 @@ app.MapPost("/v1/messages", async (
                 JsonSerializer.Serialize(upstream, AppJsonSerializerContext.Default.ChatCompletionResponse));
 
         AnthropicMessagesResponse anthropicResp;
-        try { anthropicResp = respT.Translate(upstream, req, resolvedTarget); }
+        try { anthropicResp = respT.Translate(upstream, req, resolvedTarget, snapshot); }
         catch (AdapterException ex)
         {
             sink.Emit(new CaptureErrorEvent(correlationId, "translation", "Adapter", ex.Message));

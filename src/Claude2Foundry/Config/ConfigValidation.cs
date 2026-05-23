@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Claude2Foundry.Config;
 using Microsoft.Extensions.Logging;
 
@@ -8,21 +9,16 @@ public static class ConfigValidation
     private static readonly HashSet<string> ValidReasoningPolicies = ["none", "passthrough", "effort"];
     private static readonly HashSet<string> ValidTokenizerSources = ["TiktokenCl100k", "TiktokenO200k", "HuggingFace"];
     private static readonly HashSet<string> ValidCaptureModes = ["hybrid", "full"];
+    private static readonly Regex BackendUrlRegex =
+        new(@"^https?://.+/openai/v1/?$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static void Validate(ProxyConfig cfg, ILogger logger)
     {
         var errors = new List<string>();
 
         var backendUrl = cfg.BackendUrl ?? "";
-        var isAzureOpenAI = backendUrl.Contains(".openai.azure.com", StringComparison.OrdinalIgnoreCase);
-        var isFoundryServices = backendUrl.Contains(".services.ai.azure.com", StringComparison.OrdinalIgnoreCase);
-        if (string.IsNullOrWhiteSpace(backendUrl) ||
-            !backendUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
-            (!isAzureOpenAI && !isFoundryServices) ||
-            !backendUrl.TrimEnd('/').EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
-        {
-            errors.Add("Proxy:BackendUrl must be a well-formed https://*.openai.azure.com/openai/v1/ or https://*.services.ai.azure.com/.../openai/v1/ URL");
-        }
+        if (!BackendUrlRegex.IsMatch(backendUrl))
+            errors.Add("Proxy:BackendUrl must be https://<host>/openai/v1/ (e.g. https://my-endpoint.openai.azure.com/openai/v1/)");
 
         var apiKeyEnv = cfg.ApiKeyEnv;
         if (string.IsNullOrWhiteSpace(apiKeyEnv))
@@ -97,16 +93,8 @@ public static class ConfigValidation
         var issues = new List<ConfigIssue>();
 
         var backendUrl = cfg.BackendUrl ?? "";
-        var isAzureOpenAI = backendUrl.Contains(".openai.azure.com", StringComparison.OrdinalIgnoreCase);
-        var isFoundryServices = backendUrl.Contains(".services.ai.azure.com", StringComparison.OrdinalIgnoreCase);
-        if (string.IsNullOrWhiteSpace(backendUrl) ||
-            !backendUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
-            (!isAzureOpenAI && !isFoundryServices) ||
-            !backendUrl.TrimEnd('/').EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
-        {
-            issues.Add(new("Proxy.BackendUrl",
-                "Must be https://*.openai.azure.com/openai/v1/ or https://*.services.ai.azure.com/.../openai/v1/"));
-        }
+        if (!BackendUrlRegex.IsMatch(backendUrl))
+            issues.Add(new("Proxy.BackendUrl", "Must be https://<host>/openai/v1/ (e.g. https://my-endpoint.openai.azure.com/openai/v1/)"));
 
         if (string.IsNullOrWhiteSpace(cfg.ApiKeyEnv))
             issues.Add(new("Proxy.ApiKeyEnv", "Required"));

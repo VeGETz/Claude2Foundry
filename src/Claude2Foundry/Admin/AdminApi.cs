@@ -30,7 +30,7 @@ public static class AdminApi
 
     // GET /api/admin/config
     private static IResult GetConfig(IOptionsMonitor<ProxyConfig> options) =>
-        Results.Json(new { proxy = options.CurrentValue });
+        Results.Json(new { proxy = MaskConfig(options.CurrentValue) });
 
     // GET /api/admin/config/schema
     private static IResult GetConfigSchema() =>
@@ -180,6 +180,14 @@ public static class AdminApi
             logFile = new { path = currentLog, sizeBytes };
         }
 
+        string? localFileError = null;
+        var localPath = Path.Combine(dataDir, "appsettings.local.json");
+        if (File.Exists(localPath))
+        {
+            try { JsonDocument.Parse(File.ReadAllText(localPath)).Dispose(); }
+            catch (JsonException ex) { localFileError = ex.Message; }
+        }
+
         return Results.Json(new
         {
             uptimeSec,
@@ -194,7 +202,7 @@ public static class AdminApi
                 lastFailureAt = health.LastFailureAt,
                 lastFailureMessage = health.LastFailureMessage
             },
-            config = new { proxy = (object)cfg },
+            config = new { proxy = MaskConfig(cfg), localFileError },
             inFlight = restart.InFlightCount,
             ringBuffer = new { occupancy = pipeline.RingOccupancy, capacity = pipeline.RingCapacityMax },
             capture = new { mode = captureMode.EffectiveMode, scope = "session" },
@@ -277,7 +285,7 @@ public static class AdminApi
         else
             captureMode.SetSession(mode);
 
-        return Results.Json(new { ok = true, mode });
+        return Results.Json(new { ok = true, mode, scope });
     }
 
     // POST /api/admin/test-request
@@ -321,6 +329,14 @@ public static class AdminApi
         {
             return Results.Json(new { error = new { type = "test_request_failed", message = ex.Message } }, statusCode: ex.StatusCode);
         }
+    }
+
+    private static object MaskConfig(ProxyConfig cfg)
+    {
+        var resolved = Environment.GetEnvironmentVariable(cfg.ApiKeyEnv);
+        if (string.IsNullOrEmpty(resolved)) return cfg;
+        var json = JsonSerializer.Serialize(cfg);
+        return JsonNode.Parse(json.Replace(resolved, "***"))!;
     }
 
     private static IResult BadRequest(string type, string message) =>

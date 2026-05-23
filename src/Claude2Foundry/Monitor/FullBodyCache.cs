@@ -15,6 +15,8 @@ public sealed class FullBodyCache
         {
             if (_cache.ContainsKey(id))
             {
+                _order.Remove(id);
+                _order.AddLast(id);
                 _cache[id] = record;
                 return;
             }

@@ -55,4 +55,22 @@ public class FullBodyCacheTests
 
         Assert.Equal("updated", cache.Get("abc")!.Phase);
     }
+
+    [Fact]
+    public void Store_Duplicate_Touches_LRU_Position()
+    {
+        var cache = new FullBodyCache();
+        for (int i = 0; i < 100; i++)
+            cache.Store($"id-{i}", MakeRecord($"id-{i}"));
+
+        // Touch id-0 to move it to most-recently-used
+        cache.Store("id-0", new RequestFullRecord { Id = "id-0", Phase = "touched" });
+
+        // Adding one more should evict id-1 (now the oldest), not id-0
+        cache.Store("id-100", MakeRecord("id-100"));
+
+        Assert.Equal("touched", cache.Get("id-0")!.Phase);
+        Assert.Null(cache.Get("id-1"));
+        Assert.NotNull(cache.Get("id-100"));
+    }
 }
