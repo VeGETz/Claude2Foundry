@@ -13,4 +13,9 @@ export default defineConfig({
       '/v1': 'http://127.0.0.1:8787',
     },
   },
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: [],
+  },
 })
