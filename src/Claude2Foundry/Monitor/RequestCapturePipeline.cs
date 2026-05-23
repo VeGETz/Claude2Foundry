@@ -23,6 +23,8 @@ public sealed class RequestCapturePipeline : IRequestCaptureSink, IAsyncDisposab
 
     private readonly JsonlWriter _jsonlWriter;
     private readonly FullBodyCache _bodyCache;
+    // Accumulates per-request bodies; only touched by the single-reader background task
+    private readonly Dictionary<string, RequestFullRecord> _accum = new();
     private Task? _backgroundTask;
     private long _sequence;
 
@@ -92,15 +94,47 @@ public sealed class RequestCapturePipeline : IRequestCaptureSink, IAsyncDisposab
         var frame = new SseFrame(seq, eventName, json);
 
         UpdateRing(evt);
+        AccumulateBody(evt);
 
         lock (_subscriberLock)
         {
             foreach (var sub in _subscribers)
                 sub.TryEnqueue(frame, isTerminal);
         }
+    }
 
-        if (evt is ResponseSentEvent)
-            _jsonlWriter.Write(evt.Id, evt);
+    // Called only from the single-reader background task — no locking required.
+    private void AccumulateBody(CaptureEvent evt)
+    {
+        switch (evt)
+        {
+            case RequestReceivedEvent e:
+                _accum[e.Id] = new RequestFullRecord { Id = e.Id, Phase = "received", AnthropicBody = e.BodyPreview };
+                break;
+
+            case RequestTranslatedEvent e:
+                if (_accum.TryGetValue(e.Id, out var cur1))
+                    _accum[e.Id] = cur1 with { Phase = "translated", OpenaiBody = e.OpenaiBody };
+                break;
+
+            case ResponseSentEvent e:
+                var partial = _accum.TryGetValue(e.Id, out var cur2)
+                    ? cur2
+                    : new RequestFullRecord { Id = e.Id, Phase = "complete" };
+                var full = partial with { Phase = "complete", AnthropicAssembled = e.AnthropicAssembled };
+                _bodyCache.Store(e.Id, full);
+                _jsonlWriter.Write(e.Id, full);
+                _accum.Remove(e.Id);
+                break;
+
+            case CaptureErrorEvent e:
+                var errPartial = _accum.TryGetValue(e.Id, out var cur3)
+                    ? cur3
+                    : new RequestFullRecord { Id = e.Id, Phase = "error" };
+                _bodyCache.Store(e.Id, errPartial with { Phase = "error" });
+                _accum.Remove(e.Id);
+                break;
+        }
     }
 
     private void UpdateRing(CaptureEvent evt)

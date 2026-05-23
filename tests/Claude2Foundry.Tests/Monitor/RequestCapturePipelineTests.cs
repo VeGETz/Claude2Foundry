@@ -9,6 +9,7 @@ public class RequestCapturePipelineTests : IAsyncDisposable
 {
     private readonly string _tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
     private readonly RequestCapturePipeline _pipeline;
+    private readonly FullBodyCache _bodyCache;
     private readonly CancellationTokenSource _cts = new();
 
     public RequestCapturePipelineTests()
@@ -21,8 +22,8 @@ public class RequestCapturePipelineTests : IAsyncDisposable
         });
         var monitor = new OptionsMonitorStub(options.Value);
         var jsonlWriter = new JsonlWriter(_tempDir, monitor, NullLogger<JsonlWriter>.Instance);
-        var bodyCache = new FullBodyCache();
-        _pipeline = new RequestCapturePipeline(jsonlWriter, bodyCache);
+        _bodyCache = new FullBodyCache();
+        _pipeline = new RequestCapturePipeline(jsonlWriter, _bodyCache);
         _pipeline.Start(_cts.Token);
     }
 
@@ -90,6 +91,58 @@ public class RequestCapturePipelineTests : IAsyncDisposable
 
         Assert.True(_pipeline.RingOccupancy >= 1);
     }
+
+
+    [Fact]
+    public async Task ResponseSentEvent_Stores_AnthropicAssembled_In_Cache()
+    {
+        var bodyCache = GetBodyCache();
+        var assembled = new { id = "fake-resp", type = "message", content = new[] { new { type = "text", text = "hello" } } };
+
+        _pipeline.Emit(new RequestReceivedEvent("req-x", DateTimeOffset.UtcNow, "claude-test", false, [], null));
+        _pipeline.Emit(new ResponseSentEvent("req-x", 50, assembled));
+
+        await Task.Delay(150); // let background process
+
+        var record = bodyCache.Get("req-x");
+        Assert.NotNull(record);
+        Assert.Equal("complete", record!.Phase);
+        Assert.NotNull(record.AnthropicAssembled);
+    }
+
+    [Fact]
+    public async Task AccumulateBody_Carries_OpenaiBody_Into_FullRecord()
+    {
+        var bodyCache = GetBodyCache();
+        var openaiBody = new { model = "deepseek-v3", messages = new[] { new { role = "user", content = "hi" } } };
+
+        _pipeline.Emit(new RequestReceivedEvent("req-y", DateTimeOffset.UtcNow, "claude-test", false, [], null));
+        _pipeline.Emit(new RequestTranslatedEvent("req-y", "deepseek-v3", openaiBody));
+        _pipeline.Emit(new ResponseSentEvent("req-y", 75, new { type = "message" }));
+
+        await Task.Delay(150);
+
+        var record = bodyCache.Get("req-y");
+        Assert.NotNull(record);
+        Assert.NotNull(record!.OpenaiBody);
+    }
+
+    [Fact]
+    public async Task CaptureErrorEvent_Stores_ErrorPhase_In_Cache()
+    {
+        var bodyCache = GetBodyCache();
+
+        _pipeline.Emit(new RequestReceivedEvent("req-z", DateTimeOffset.UtcNow, "claude-test", false, [], null));
+        _pipeline.Emit(new CaptureErrorEvent("req-z", "foundry-sent", "Foundry", "timeout"));
+
+        await Task.Delay(150);
+
+        var record = bodyCache.Get("req-z");
+        Assert.NotNull(record);
+        Assert.Equal("error", record!.Phase);
+    }
+
+    private FullBodyCache GetBodyCache() => _bodyCache;
 
     private sealed class OptionsMonitorStub(ProxyConfig value) : IOptionsMonitor<ProxyConfig>
     {

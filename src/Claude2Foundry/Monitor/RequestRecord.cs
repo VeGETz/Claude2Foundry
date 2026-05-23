@@ -38,6 +38,8 @@ public sealed record RequestFullRecord
     public object? AnthropicBody { get; init; }
     public object? OpenaiBody { get; init; }
     public object? ResponseBody { get; init; }
+    [System.Text.Json.Serialization.JsonPropertyName("anthropicAssembled")]
+    public object? AnthropicAssembled { get; init; }
     public Dictionary<string, string> Headers { get; init; } = [];
     public required string Phase { get; init; }
     public bool Expired { get; init; }
