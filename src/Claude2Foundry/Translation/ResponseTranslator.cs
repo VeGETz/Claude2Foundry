@@ -12,13 +12,15 @@ public sealed class ResponseTranslator(ProxyConfig config, ILogger<ResponseTrans
     public AnthropicMessagesResponse Translate(
         ChatCompletionResponse upstream,
         AnthropicMessagesRequest original,
-        string resolvedTarget)
+        string resolvedTarget,
+        ProxyConfig? snapshot = null)
     {
         if (upstream.Choices.Count == 0)
             throw new AdapterException("Foundry returned no choices");
 
         var choice = upstream.Choices[0];
-        var policy = config.ReasoningPolicies.GetValueOrDefault(resolvedTarget, "none");
+        var effectiveConfig = snapshot ?? config;
+        var policy = effectiveConfig.ReasoningPolicies.GetValueOrDefault(resolvedTarget, "none");
         var content = BuildContentBlocks(choice.Message, policy);
 
         if (content.Count == 0)

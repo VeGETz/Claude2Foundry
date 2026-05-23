@@ -12,9 +12,11 @@ public sealed class StreamTranslator(ProxyConfig config)
         IAsyncEnumerable<ChatCompletionChunk> upstream,
         AnthropicMessagesRequest original,
         string resolvedTarget,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct,
+        ProxyConfig? snapshot = null)
     {
-        var policy = config.ReasoningPolicies.GetValueOrDefault(resolvedTarget, "none");
+        var effectiveConfig = snapshot ?? config;
+        var policy = effectiveConfig.ReasoningPolicies.GetValueOrDefault(resolvedTarget, "none");
         var state = new StreamState();
         var firstChunk = true;
 

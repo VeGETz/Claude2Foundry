@@ -310,4 +310,34 @@ public class RequestTranslatorTests
         Assert.Equal(100, req.MaxTokens);
         Assert.Equal(100, req.MaxCompletionTokens);
     }
+
+    [Fact]
+    public void Translate_UsesSnapshot_WhenProvided()
+    {
+        var constructorCfg = new ProxyConfig
+        {
+            BackendUrl = "https://a.openai.azure.com/openai/v1/",
+            ApiKeyEnv = "FOUNDRY_API_KEY",
+            DefaultModel = "model-from-constructor",
+        };
+        var snapshotCfg = new ProxyConfig
+        {
+            BackendUrl = "https://a.openai.azure.com/openai/v1/",
+            ApiKeyEnv = "FOUNDRY_API_KEY",
+            DefaultModel = "model-from-snapshot",
+        };
+
+        var t = new RequestTranslator(constructorCfg, NullLogger<RequestTranslator>.Instance);
+        var req = new AnthropicMessagesRequest
+        {
+            Model = "no-alias-match",
+            Messages = [new AnthropicMessage { Role = "user", Content = StringEl("hi") }],
+            MaxTokens = 10,
+        };
+
+        var (result, target) = t.Translate(req, snapshotCfg);
+
+        Assert.Equal("model-from-snapshot", result.Model);
+        Assert.Equal("model-from-snapshot", target);
+    }
 }

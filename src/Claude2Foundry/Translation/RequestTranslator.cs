@@ -11,12 +11,13 @@ public sealed class RequestTranslator(ProxyConfig config, ILogger<RequestTransla
 {
     private static readonly ConcurrentDictionary<string, byte> _warnedFields = new();
 
-    public (ChatCompletionRequest Request, string ResolvedTarget) Translate(AnthropicMessagesRequest req)
+    public (ChatCompletionRequest Request, string ResolvedTarget) Translate(AnthropicMessagesRequest req, ProxyConfig? snapshot = null)
     {
-        var resolved = config.ModelAliases.GetValueOrDefault(req.Model, config.DefaultModel);
+        var effectiveConfig = snapshot ?? config;
+        var resolved = effectiveConfig.ModelAliases.GetValueOrDefault(req.Model, effectiveConfig.DefaultModel);
         logger.LogInformation("model={Original}->{Resolved}", req.Model, resolved);
 
-        var policy = config.ReasoningPolicies.GetValueOrDefault(resolved, "none");
+        var policy = effectiveConfig.ReasoningPolicies.GetValueOrDefault(resolved, "none");
         var messages = new List<ChatMessage>();
 
         BuildSystemMessage(req.System, messages);
@@ -27,9 +28,10 @@ public sealed class RequestTranslator(ProxyConfig config, ILogger<RequestTransla
         return (openaiReq, resolved);
     }
 
-    public ChatCompletionRequest TranslateCountTokens(AnthropicCountTokensRequest req)
+    public ChatCompletionRequest TranslateCountTokens(AnthropicCountTokensRequest req, ProxyConfig? snapshot = null)
     {
-        var resolved = config.ModelAliases.GetValueOrDefault(req.Model, config.DefaultModel);
+        var effectiveConfig = snapshot ?? config;
+        var resolved = effectiveConfig.ModelAliases.GetValueOrDefault(req.Model, effectiveConfig.DefaultModel);
         var messages = new List<ChatMessage>();
         BuildSystemMessage(req.System, messages);
 
@@ -294,6 +296,7 @@ public sealed class RequestTranslator(ProxyConfig config, ILogger<RequestTransla
             Messages = messages,
             Temperature = req.Temperature,
             TopP = req.TopP,
+            MaxTokens = req.MaxTokens,
             MaxCompletionTokens = req.MaxTokens,
             Stop = stopSeqs,
             Stream = req.Stream,
