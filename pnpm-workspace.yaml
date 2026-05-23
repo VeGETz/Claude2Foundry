@@ -1,4 +1,5 @@
 packages:
   - 'ui'
 allowBuilds:
-  - esbuild
+  '0': esbuild
+  esbuild: set this to true or false

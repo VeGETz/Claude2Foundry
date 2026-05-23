@@ -4,17 +4,30 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Bcl.Memory" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.FileProviders.Embedded" Version="10.0.8" PrivateAssets="all" />
     <PackageReference Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
     <PackageReference Include="Microsoft.ML.Tokenizers.Data.Cl100kBase" Version="2.0.0" />
     <PackageReference Include="Microsoft.ML.Tokenizers.Data.O200kBase" Version="2.0.0" />
   </ItemGroup>
 
-  <ItemGroup>
-    <EmbeddedResource Include="wwwroot\_ui\**\*" />
+  <!-- Embed pre-built SPA assets; run `pnpm run build` in ui/ first. -->
+  <ItemGroup Condition="Exists('$(MSBuildProjectDirectory)\wwwroot\_ui\index.html')">
+    <EmbeddedResource Include="$(MSBuildProjectDirectory)\wwwroot\_ui\**\*" />
   </ItemGroup>
+
+  <!--
+    BuildUI: runs pnpm to compile the Adapter Console SPA before embedding.
+    IgnoreExitCode="true" lets local builds succeed when pnpm is not in PATH;
+    CI must install Node + pnpm before dotnet build for a fresh embed.
+  -->
+  <Target Name="BuildUI" BeforeTargets="PrepareResourceNames">
+    <Exec Command="pnpm install --frozen-lockfile --ignore-scripts" WorkingDirectory="$(MSBuildProjectDirectory)/../../" IgnoreExitCode="true" />
+    <Exec Command="pnpm run build" WorkingDirectory="$(MSBuildProjectDirectory)/../../ui" IgnoreExitCode="true" />
+  </Target>
 
 </Project>

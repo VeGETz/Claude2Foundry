@@ -4,6 +4,10 @@ public sealed class RestartCoordinator
 {
     private volatile int _inFlightCount;
     private readonly CancellationTokenSource _draining = new();
+    private readonly IExitSink _exitSink;
+
+    public RestartCoordinator(IExitSink? exitSink = null) =>
+        _exitSink = exitSink ?? new EnvironmentExitSink();
 
     public bool WrapperPresent => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("C2F_WRAPPER"));
 
@@ -22,7 +26,7 @@ public sealed class RestartCoordinator
         if (!WrapperPresent)
             throw new InvalidOperationException("C2F_WRAPPER not set");
 
-        logger.LogInformation("Restart requested — draining in-flight requests (grace 60 s)");
+        logger.LogInformation("Restart requested → draining in-flight requests (grace 60 s)");
         _draining.Cancel();
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
@@ -32,11 +36,10 @@ public sealed class RestartCoordinator
         if (_inFlightCount > 0)
             logger.LogWarning("Drain grace expired with {Count} in-flight request(s); exiting anyway", _inFlightCount);
 
-        // Exit after allowing current response to flush (caller awaits Task.Yield before calling)
         _ = Task.Run(async () =>
         {
             await Task.Delay(200);
-            Environment.Exit(75);
+            _exitSink.Exit(75);
         });
     }
 
