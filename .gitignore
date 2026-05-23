@@ -62,3 +62,4 @@ ui/dist/
 
 # pnpm workspace root
 node_modules/
+.claude/worktrees/cuddly-hatching-sedgewick
