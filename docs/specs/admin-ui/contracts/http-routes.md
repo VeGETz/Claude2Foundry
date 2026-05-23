@@ -179,10 +179,13 @@ Fetch the full captured bodies for a specific correlation id (used when expandin
   "phase": "complete",
   "anthropicBody": { /* original request body */ },
   "openaiBody": { /* translated request body */ },
-  "responseBody": { /* assembled response */ },
+  "responseBody": { /* assembled OpenAI response body */ },
+  "anthropicAssembled": { /* assembled response sent back to Claude Code, or null */ },
   "headers": { /* request headers, secrets masked */ }
 }
 ```
+
+`anthropicAssembled` was added in the post-Phase-2 contract amendment (2026-05-23). It carries the same payload as the SSE `response.sent` event's `anthropicAssembled` field, persisted via the full-body cache and JSONL request capture. `null` when the request errored before assembly or when only request-side bodies are available.
 
 **Response 200 (expired):**
 ```json
