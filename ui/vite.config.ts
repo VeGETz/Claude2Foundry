@@ -2,9 +2,10 @@ import { defineConfig } from 'vite'
 import preact from '@preact/preset-vite'
 
 export default defineConfig({
+  base: '/_ui/',
   plugins: [preact()],
   build: {
-    outDir: '../src/Claude2Foundry/wwwroot/_ui',
+    outDir: '../src/Claude2Foundry/wwwroot/_ui/dist',
     emptyOutDir: true,
   },
   server: {

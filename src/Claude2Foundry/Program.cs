@@ -145,7 +145,7 @@ app.MapGet("/health", async (FoundryHealthProbe probe, CancellationToken ct) =>
 });
 
 ManifestEmbeddedFileProvider? uiProvider = null;
-try { uiProvider = new ManifestEmbeddedFileProvider(typeof(Program).Assembly, "wwwroot/_ui"); }
+try { uiProvider = new ManifestEmbeddedFileProvider(typeof(Program).Assembly, "wwwroot/_ui/dist"); }
 catch { /* UI not embedded; /_ui/ returns 404 until next build with embedded assets */ }
 var mimeMap = new FileExtensionContentTypeProvider();
 

@@ -11,7 +11,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Bcl.Memory" Version="10.0.8" />
-    <PackageReference Include="Microsoft.Extensions.FileProviders.Embedded" Version="10.0.8" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Extensions.FileProviders.Embedded" Version="10.0.8" />
     <PackageReference Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
     <PackageReference Include="Microsoft.ML.Tokenizers.Data.Cl100kBase" Version="2.0.0" />
     <PackageReference Include="Microsoft.ML.Tokenizers.Data.O200kBase" Version="2.0.0" />
@@ -41,10 +41,10 @@
   <Target Name="EmbedUiAssets"
           AfterTargets="BuildUI"
           BeforeTargets="_CalculateEmbeddedFilesManifestInputs">
-    <Error Condition="!Exists('$(MSBuildProjectDirectory)\wwwroot\_ui\index.html')"
-           Text="UI build did not produce wwwroot/_ui/index.html. Ensure pnpm is on PATH or set /p:SkipUiBuild=true to embed pre-built assets." />
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)\wwwroot\_ui\dist\index.html')"
+           Text="UI build did not produce wwwroot/_ui/dist/index.html. Ensure pnpm is on PATH or set /p:SkipUiBuild=true to embed pre-built assets." />
     <ItemGroup>
-      <EmbeddedResource Include="$(MSBuildProjectDirectory)\wwwroot\_ui\**\*" />
+      <EmbeddedResource Include="$(MSBuildProjectDirectory)\wwwroot\_ui\dist\**\*" />
     </ItemGroup>
   </Target>
 
