@@ -1,12 +1,12 @@
 using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Claude2Foundry.Admin;
 using Claude2Foundry.Backend;
 using Claude2Foundry.Config;
 using Claude2Foundry.Errors;
 using Claude2Foundry.Logging;
+using Claude2Foundry.Monitor;
 using Claude2Foundry.Protocol;
 using Claude2Foundry.Protocol.Anthropic;
 using Claude2Foundry.Protocol.OpenAI;
@@ -16,6 +16,15 @@ using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// --- Data dir (resolved before config so it can be used as config source path) ---
+var dataDir = DataDirResolver.ResolveDataDir(builder.Environment);
+
+// --- Configuration layering: base + optional local override ---
+builder.Configuration.AddJsonFile(
+    Path.Combine(dataDir, "appsettings.local.json"),
+    optional: true,
+    reloadOnChange: true);
+
 builder.WebHost.ConfigureKestrel(opts =>
 {
     opts.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(10);
@@ -23,10 +32,14 @@ builder.WebHost.ConfigureKestrel(opts =>
     opts.Limits.MaxRequestBodySize = 64 * 1024 * 1024;
 });
 
+// Expose ProxyConfig as IOptionsMonitor for hot-reload awareness
 builder.Services.Configure<ProxyConfig>(builder.Configuration.GetSection("Proxy"));
+
+// Singleton ProxyConfig snapshot (validated at startup; used by translators on hot-path)
 builder.Services.AddSingleton(sp =>
 {
-    var cfg = sp.GetRequiredService<IOptions<ProxyConfig>>().Value;
+    var monitor = sp.GetRequiredService<IOptionsMonitor<ProxyConfig>>();
+    var cfg = monitor.CurrentValue;
     var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("Claude2Foundry.Config.ConfigValidation");
     ConfigValidation.Validate(cfg, logger);
     return cfg;
@@ -55,33 +68,80 @@ builder.Services.AddSingleton<ResponseTranslator>();
 builder.Services.AddSingleton<StreamTranslator>();
 builder.Services.AddSingleton<TokenCounter>();
 
+// --- Admin + Monitor services ---
+builder.Services.AddKeyedSingleton<string>("dataDir", dataDir);
+builder.Services.AddSingleton<ConfigWriter>();
+builder.Services.AddSingleton<RestartCoordinator>();
+builder.Services.AddSingleton<FoundryHealthProbe>();
+builder.Services.AddSingleton<FullBodyCache>();
+builder.Services.AddSingleton(sp =>
+{
+    var options = sp.GetRequiredService<IOptionsMonitor<ProxyConfig>>();
+    var logger = sp.GetRequiredService<ILogger<JsonlWriter>>();
+    var writer = new JsonlWriter(dataDir, options, logger);
+    return writer;
+});
+builder.Services.AddSingleton<CaptureModeController>();
+builder.Services.AddSingleton(sp =>
+{
+    var jsonlWriter = sp.GetRequiredService<JsonlWriter>();
+    var bodyCache = sp.GetRequiredService<FullBodyCache>();
+    return new RequestCapturePipeline(jsonlWriter, bodyCache);
+});
+builder.Services.AddSingleton<IRequestCaptureSink>(sp =>
+    sp.GetRequiredService<RequestCapturePipeline>());
+builder.Services.AddSingleton<TestRequestRunner>();
+
 builder.Services.ConfigureHttpJsonOptions(opts =>
 {
     opts.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonSerializerContext.Default);
-    opts.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
-    opts.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
 });
 
 var app = builder.Build();
 
+// Start background pipeline services
+var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
+var pipeline = app.Services.GetRequiredService<RequestCapturePipeline>();
+var jsonlWriter = app.Services.GetRequiredService<JsonlWriter>();
+
+lifetime.ApplicationStarted.Register(() =>
+{
+    pipeline.Start(lifetime.ApplicationStopping);
+    jsonlWriter.Start(lifetime.ApplicationStopping);
+});
+
+lifetime.ApplicationStopping.Register(() =>
+{
+    pipeline.DrainAsync().GetAwaiter().GetResult();
+    jsonlWriter.DrainAsync().GetAwaiter().GetResult();
+});
+
 try { _ = app.Services.GetRequiredService<ProxyConfig>(); }
 catch (Exception ex) { app.Logger.LogCritical(ex, "Startup failed"); Environment.Exit(1); }
 
-DataDirResolver.ResolveDataDir(
-    app.Environment,
-    app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Claude2Foundry.Config.DataDirResolver"));
-
 app.UseMiddleware<CorrelationIdMiddleware>();
-app.UseWhen(
-    ctx => ctx.Request.Path.StartsWithSegments("/api/admin"),
-    adminBranch => adminBranch.UseMiddleware<CorsAndCsrfGuard>());
+
+// Admin CORS+CSRF middleware + routes
+app.Map("/api/admin", adminApp =>
+{
+    adminApp.UseMiddleware<CorsAndCsrfGuard>();
+    adminApp.UseRouting();
+    adminApp.UseEndpoints(endpoints =>
+    {
+        var group = endpoints.MapGroup("");
+        AdminApi.Map(group);
+    });
+});
+
 LogStartupBanner(app, builder.Configuration);
 
-app.MapGet("/health", () => Results.Text("ok"));
-app.MapGet("/_ui/{**path}", () => Results.NotFound());
+app.MapGet("/health", async (FoundryHealthProbe probe, CancellationToken ct) =>
+{
+    var status = await probe.GetAsync(ct);
+    return Results.Text(status.Reachable ? "ok" : "degraded");
+});
 
-var adminGroup = app.MapGroup("/api/admin");
-AdminApi.Map(adminGroup);
+app.MapGet("/_ui/{**path}", () => Results.NotFound());
 
 app.MapPost("/v1/messages/count_tokens", async (HttpContext ctx, TokenCounter counter) =>
 {
@@ -107,8 +167,15 @@ app.MapPost("/v1/messages/count_tokens", async (HttpContext ctx, TokenCounter co
     }
 });
 
-app.MapPost("/v1/messages", async (HttpContext ctx, RequestTranslator reqT, ResponseTranslator respT,
-    StreamTranslator streamT, FoundryClient foundry, ProxyConfig cfg, ILogger<Program> logger) =>
+app.MapPost("/v1/messages", async (
+    HttpContext ctx,
+    RequestTranslator reqT,
+    ResponseTranslator respT,
+    StreamTranslator streamT,
+    FoundryClient foundry,
+    ProxyConfig cfg,
+    IRequestCaptureSink sink,
+    ILogger<Program> logger) =>
 {
     var correlationId = ctx.GetCorrelationId();
     var sw = Stopwatch.StartNew();
@@ -130,19 +197,40 @@ app.MapPost("/v1/messages", async (HttpContext ctx, RequestTranslator reqT, Resp
 
     logger.LogInformation("=> req={CorrelationId} POST /v1/messages stream={Stream}", correlationId, req.Stream == true);
 
+    // Emit request.received
+    sink.Emit(new RequestReceivedEvent(
+        correlationId,
+        DateTimeOffset.UtcNow,
+        req.Model,
+        req.Stream == true,
+        RequestRecordBuilder.RedactHeaders(ctx.Request.Headers),
+        null));
+
     ChatCompletionRequest openaiReq;
     string resolvedTarget;
     try { (openaiReq, resolvedTarget) = reqT.Translate(req); }
-    catch (AdapterException ex) { return ErrorResult(ErrorMapping.AdapterError("invalid_request_error", ex.Message), 400, ctx); }
+    catch (AdapterException ex)
+    {
+        sink.Emit(new CaptureErrorEvent(correlationId, "translation", "Adapter", ex.Message));
+        sink.Finalize(correlationId);
+        return ErrorResult(ErrorMapping.AdapterError("invalid_request_error", ex.Message), 400, ctx);
+    }
+
+    // Emit request.translated
+    sink.Emit(new RequestTranslatedEvent(correlationId, resolvedTarget, null));
 
     if (logger.IsEnabled(LogLevel.Debug))
         logger.LogDebug("req={CorrelationId} OpenAI request: {Body}", correlationId,
             JsonSerializer.Serialize(openaiReq, AppJsonSerializerContext.Default.ChatCompletionRequest));
 
     var idleTimeout = TimeSpan.FromSeconds(cfg.Timeouts.StreamIdleSeconds);
+    int chunkSeq = 0;
 
     if (req.Stream == true)
     {
+        // Emit foundry.request.sent
+        sink.Emit(new FoundrySentEvent(correlationId, DateTimeOffset.UtcNow));
+
         var upstream = foundry.StreamAsync(openaiReq, correlationId, idleTimeout, ct);
         var enumerator = upstream.GetAsyncEnumerator(ct);
         bool hasFirst;
@@ -151,12 +239,16 @@ app.MapPost("/v1/messages", async (HttpContext ctx, RequestTranslator reqT, Resp
         {
             await enumerator.DisposeAsync();
             var (_, httpStatus) = ErrorMapping.MapFoundryStatus(ex.Status);
+            sink.Emit(new CaptureErrorEvent(correlationId, "foundry-sent", "Foundry", ex.FoundryMessage));
+            sink.Finalize(correlationId);
             return ErrorResult(ErrorMapping.FoundryError(ex.Status, ex.FoundryMessage), httpStatus, ctx);
         }
         catch (Exception ex)
         {
             await enumerator.DisposeAsync();
             logger.LogError(ex, "req={CorrelationId} Stream open failed", correlationId);
+            sink.Emit(new CaptureErrorEvent(correlationId, "foundry-sent", "Adapter", ex.Message));
+            sink.Finalize(correlationId);
             return ErrorResult(ErrorMapping.AdapterError("api_error", $"Internal error ({correlationId})"), 500, ctx);
         }
 
@@ -171,22 +263,39 @@ app.MapPost("/v1/messages", async (HttpContext ctx, RequestTranslator reqT, Resp
             {
                 await foreach (var frame in streamT.Translate(Reattach(enumerator.Current, enumerator, ct), req, resolvedTarget, ct))
                 {
+                    // Emit foundry.chunk for each SSE frame (best effort, parse delta from frame)
+                    sink.Emit(new FoundryChunkEvent(correlationId, chunkSeq++, null, null, null));
                     await ctx.Response.WriteAsync(frame, ct);
                     await ctx.Response.Body.FlushAsync(ct);
                 }
             }
+            sink.Emit(new ResponseSentEvent(correlationId, (int)sw.ElapsedMilliseconds, null));
+            sink.Finalize(correlationId);
         }
-        catch (OperationCanceledException) { logger.LogInformation("req={CorrelationId} Client disconnected", correlationId); }
+        catch (OperationCanceledException)
+        {
+            logger.LogInformation("req={CorrelationId} Client disconnected", correlationId);
+            sink.Finalize(correlationId, new OperationCanceledException("Client disconnected"));
+        }
         catch (TimeoutException ex)
         {
             logger.LogError("req={CorrelationId} {Msg}", correlationId, ex.Message);
             await ctx.Response.WriteAsync(ErrorMapping.SseErrorFrame(ErrorMapping.AdapterError("api_error", ex.Message)), CancellationToken.None);
+            sink.Emit(new CaptureErrorEvent(correlationId, "streaming", "Adapter", ex.Message));
+            sink.Finalize(correlationId);
         }
-        catch (FoundryHttpException ex) { await ctx.Response.WriteAsync(ErrorMapping.SseErrorFrame(ErrorMapping.FoundryError(ex.Status, ex.FoundryMessage)), CancellationToken.None); }
+        catch (FoundryHttpException ex)
+        {
+            await ctx.Response.WriteAsync(ErrorMapping.SseErrorFrame(ErrorMapping.FoundryError(ex.Status, ex.FoundryMessage)), CancellationToken.None);
+            sink.Emit(new CaptureErrorEvent(correlationId, "streaming", "Foundry", ex.FoundryMessage));
+            sink.Finalize(correlationId);
+        }
         catch (Exception ex)
         {
             logger.LogError(ex, "req={CorrelationId} Mid-stream error", correlationId);
             await ctx.Response.WriteAsync(ErrorMapping.SseErrorFrame(ErrorMapping.AdapterError("api_error", $"Internal error ({correlationId})")), CancellationToken.None);
+            sink.Emit(new CaptureErrorEvent(correlationId, "streaming", "Adapter", ex.Message));
+            sink.Finalize(correlationId);
         }
         finally { await enumerator.DisposeAsync(); }
 
@@ -195,24 +304,40 @@ app.MapPost("/v1/messages", async (HttpContext ctx, RequestTranslator reqT, Resp
     }
     else
     {
+        // Emit foundry.request.sent
+        sink.Emit(new FoundrySentEvent(correlationId, DateTimeOffset.UtcNow));
+
         ChatCompletionResponse upstream;
         try { upstream = await foundry.PostAsync(openaiReq, correlationId, ct); }
         catch (FoundryHttpException ex)
         {
             var (_, httpStatus) = ErrorMapping.MapFoundryStatus(ex.Status);
             logger.LogInformation("<= req={CorrelationId} status={Status} elapsed={Elapsed}ms stream=false", correlationId, httpStatus, sw.ElapsedMilliseconds);
+            sink.Emit(new CaptureErrorEvent(correlationId, "foundry-sent", "Foundry", ex.FoundryMessage));
+            sink.Finalize(correlationId);
             return ErrorResult(ErrorMapping.FoundryError(ex.Status, ex.FoundryMessage), httpStatus, ctx);
         }
         catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
         {
             logger.LogError(ex, "req={CorrelationId} Outbound timeout", correlationId);
+            sink.Emit(new CaptureErrorEvent(correlationId, "foundry-sent", "Adapter", "timeout"));
+            sink.Finalize(correlationId);
             return ErrorResult(ErrorMapping.AdapterError("api_error", $"Adapter timeout after {cfg.Timeouts.OutboundTotalSeconds}s"), 500, ctx);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "req={CorrelationId} Foundry call failed", correlationId);
+            sink.Emit(new CaptureErrorEvent(correlationId, "foundry-sent", "Adapter", ex.Message));
+            sink.Finalize(correlationId);
             return ErrorResult(ErrorMapping.AdapterError("api_error", $"Internal error ({correlationId})"), 500, ctx);
         }
+
+        // Emit foundry.complete
+        var usage = upstream.Usage;
+        sink.Emit(new FoundryCompleteEvent(
+            correlationId,
+            new UsageDto { Input = usage?.PromptTokens ?? 0, Output = usage?.CompletionTokens ?? 0 },
+            upstream.Choices.FirstOrDefault()?.FinishReason ?? "stop"));
 
         if (logger.IsEnabled(LogLevel.Debug))
             logger.LogDebug("req={CorrelationId} OpenAI response: {Body}", correlationId,
@@ -220,11 +345,15 @@ app.MapPost("/v1/messages", async (HttpContext ctx, RequestTranslator reqT, Resp
 
         AnthropicMessagesResponse anthropicResp;
         try { anthropicResp = respT.Translate(upstream, req, resolvedTarget); }
-        catch (AdapterException ex) { return ErrorResult(ErrorMapping.AdapterError("api_error", ex.Message), 500, ctx); }
+        catch (AdapterException ex)
+        {
+            sink.Emit(new CaptureErrorEvent(correlationId, "translation", "Adapter", ex.Message));
+            sink.Finalize(correlationId);
+            return ErrorResult(ErrorMapping.AdapterError("api_error", ex.Message), 500, ctx);
+        }
 
-        if (logger.IsEnabled(LogLevel.Debug))
-            logger.LogDebug("req={CorrelationId} Anthropic response: {Body}", correlationId,
-                JsonSerializer.Serialize(anthropicResp, AppJsonSerializerContext.Default.AnthropicMessagesResponse));
+        sink.Emit(new ResponseSentEvent(correlationId, (int)sw.ElapsedMilliseconds, null));
+        sink.Finalize(correlationId);
 
         logger.LogInformation("<= req={CorrelationId} status=200 elapsed={Elapsed}ms in={In} out={Out} stream=false",
             correlationId, sw.ElapsedMilliseconds, anthropicResp.Usage.InputTokens, anthropicResp.Usage.OutputTokens);
@@ -269,13 +398,15 @@ static void LogStartupBanner(WebApplication app, IConfiguration config)
         "      Aliases: {Aliases} entries\n" +
         "      Reasoning policies: {Policies} entries (none={None}, passthrough={Passthrough}, effort={Effort})\n" +
         "      Tokenizers: {Toks} entries (TiktokenCl100k={Cl100k}, TiktokenO200k={O200k}, HuggingFace={HF})\n" +
-        "      Timeouts: outbound={Out}s stream-idle={Idle}s",
+        "      Timeouts: outbound={Out}s stream-idle={Idle}s\n" +
+        "      Admin console: {Url}/_ui/",
         url, cfg.BackendUrl, cfg.ApiKeyEnv, apiKeyStatus,
         cfg.DefaultModel,
         cfg.ModelAliases.Count,
         cfg.ReasoningPolicies.Count, noneCount, passthroughCount, effortCount,
         cfg.Tokenizers.Count, cl100kCount, o200kCount, hfCount,
-        cfg.Timeouts.OutboundTotalSeconds, cfg.Timeouts.StreamIdleSeconds);
+        cfg.Timeouts.OutboundTotalSeconds, cfg.Timeouts.StreamIdleSeconds,
+        url);
 }
 
 public partial class Program { }

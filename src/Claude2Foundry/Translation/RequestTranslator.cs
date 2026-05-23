@@ -294,6 +294,7 @@ public sealed class RequestTranslator(ProxyConfig config, ILogger<RequestTransla
             Messages = messages,
             Temperature = req.Temperature,
             TopP = req.TopP,
+            MaxTokens = req.MaxTokens,
             MaxCompletionTokens = req.MaxTokens,
             Stop = stopSeqs,
             Stream = req.Stream,
