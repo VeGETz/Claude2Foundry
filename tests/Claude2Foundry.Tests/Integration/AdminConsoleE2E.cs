@@ -89,7 +89,7 @@ public sealed class AdminConsoleE2E : IAsyncLifetime
         {
             Environment.SetEnvironmentVariable("C2F_WRAPPER", "1");
 
-            await using var restartFactory = new ConsoleE2EFactory(ApiKeyEnvName, exitSink);
+            var restartFactory = new ConsoleE2EFactory(ApiKeyEnvName, exitSink);
             using var restartClient = restartFactory.CreateClient();
 
             var req = new HttpRequestMessage(HttpMethod.Post, "/api/admin/restart");
@@ -99,6 +99,7 @@ public sealed class AdminConsoleE2E : IAsyncLifetime
 
             var code = await exitSink.ExitCode.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(75, code);
+            try { await restartFactory.DisposeAsync(); } catch (OperationCanceledException) { }
         }
         finally
         {
