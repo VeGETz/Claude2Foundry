@@ -180,3 +180,52 @@ export interface RequestFullRecord {
   headers: Record<string, string>
   phase: string
 }
+
+// ---- Extended RequestSummary (full replay.snapshot shape) ------------------
+
+export interface RequestSummaryFull {
+  id: string
+  ts: string
+  originalModel: string
+  resolvedModel: string
+  status: 'received' | 'translated' | 'foundry-sent' | 'streaming' | 'complete' | 'error'
+  elapsedMs: number | null
+  usage: { input: number; output: number } | null
+  error: string | null
+  phase: string
+  stream: boolean
+}
+
+// ---- Test page -------------------------------------------------------------
+
+export interface TestRequest {
+  model: string
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>
+  thinking: { type: 'enabled'; budget_tokens: number } | null
+  stream: boolean
+}
+
+export interface TestResponse {
+  anthropicResponse: unknown
+  openaiRequest: unknown
+  openaiResponse: unknown
+  elapsedMs: number
+}
+
+// ---- Full body record (discriminated union) --------------------------------
+
+export interface RequestFullBody {
+  expired: false
+  id: string
+  phase: string
+  anthropicBody: unknown | null
+  openaiBody: unknown | null
+  responseBody: unknown | null
+  headers: Record<string, string>
+}
+
+export interface RequestExpired {
+  expired: true
+}
+
+export type RequestFullRecordResult = RequestFullBody | RequestExpired

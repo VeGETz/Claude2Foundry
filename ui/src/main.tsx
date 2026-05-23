@@ -1,7 +1,6 @@
 import { render } from 'preact'
-
-function App() {
-  return <h1>Adapter Console — phase 0 placeholder</h1>
-}
+import { App } from './App'
+import '@picocss/pico'
+import './styles/app.css'
 
 render(<App />, document.getElementById('app')!)
