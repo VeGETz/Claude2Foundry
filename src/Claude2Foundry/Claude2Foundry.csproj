@@ -5,6 +5,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
+    <!-- Set SkipUiBuild=true to skip pnpm and embed whatever is already in wwwroot/_ui/ -->
+    <SkipUiBuild Condition="'$(SkipUiBuild)' == ''">false</SkipUiBuild>
   </PropertyGroup>
 
   <ItemGroup>
@@ -15,19 +17,35 @@
     <PackageReference Include="Microsoft.ML.Tokenizers.Data.O200kBase" Version="2.0.0" />
   </ItemGroup>
 
-  <!-- Embed pre-built SPA assets; run `pnpm run build` in ui/ first. -->
-  <ItemGroup Condition="Exists('$(MSBuildProjectDirectory)\wwwroot\_ui\index.html')">
-    <EmbeddedResource Include="$(MSBuildProjectDirectory)\wwwroot\_ui\**\*" />
-  </ItemGroup>
+  <!--
+    BuildUI: runs pnpm install + build to compile the Adapter Console SPA.
+    Hard-fails when pnpm is unavailable so the binary is never silently empty.
+    Skip with /p:SkipUiBuild=true when pre-built assets are already present.
+  -->
+  <Target Name="BuildUI"
+          BeforeTargets="EmbedUiAssets"
+          Condition="'$(SkipUiBuild)' != 'true'">
+    <Exec Command="pnpm install --frozen-lockfile --ignore-scripts"
+          WorkingDirectory="$(MSBuildProjectDirectory)/../../" />
+    <Exec Command="pnpm run build"
+          WorkingDirectory="$(MSBuildProjectDirectory)/../../ui" />
+  </Target>
 
   <!--
-    BuildUI: runs pnpm to compile the Adapter Console SPA before embedding.
-    IgnoreExitCode="true" lets local builds succeed when pnpm is not in PATH;
-    CI must install Node + pnpm before dotnet build for a fresh embed.
+    EmbedUiAssets: registers SPA output as EmbeddedResource items.
+    Must run BEFORE _CalculateEmbeddedFilesManifestInputs (a DependsOnTargets
+    of PrepareResourceNames) — BeforeTargets="PrepareResourceNames" fires too
+    late because DependsOnTargets are resolved first.
+    Hard-fails if index.html is absent so the binary is never silently empty.
   -->
-  <Target Name="BuildUI" BeforeTargets="PrepareResourceNames">
-    <Exec Command="pnpm install --frozen-lockfile --ignore-scripts" WorkingDirectory="$(MSBuildProjectDirectory)/../../" IgnoreExitCode="true" />
-    <Exec Command="pnpm run build" WorkingDirectory="$(MSBuildProjectDirectory)/../../ui" IgnoreExitCode="true" />
+  <Target Name="EmbedUiAssets"
+          AfterTargets="BuildUI"
+          BeforeTargets="_CalculateEmbeddedFilesManifestInputs">
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)\wwwroot\_ui\index.html')"
+           Text="UI build did not produce wwwroot/_ui/index.html. Ensure pnpm is on PATH or set /p:SkipUiBuild=true to embed pre-built assets." />
+    <ItemGroup>
+      <EmbeddedResource Include="$(MSBuildProjectDirectory)\wwwroot\_ui\**\*" />
+    </ItemGroup>
   </Target>
 
 </Project>
