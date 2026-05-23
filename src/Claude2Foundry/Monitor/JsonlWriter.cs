@@ -158,6 +158,38 @@ public sealed class JsonlWriter : IAsyncDisposable
         return Path.Combine(logsDir, filename);
     }
 
+
+    public async Task<RequestFullRecord?> FindByIdAsync(string id, CancellationToken ct = default)
+    {
+        var logsDir = Path.Combine(_dataDir, "logs");
+        if (!Directory.Exists(logsDir)) return null;
+
+        var files = Directory.GetFiles(logsDir, "requests-*.jsonl")
+            .OrderByDescending(f => f);
+
+        foreach (var file in files)
+        {
+            try
+            {
+                var lines = await File.ReadAllLinesAsync(file, ct);
+                foreach (var line in lines.Reverse())
+                {
+                    if (!line.Contains(id)) continue;
+                    try
+                    {
+                        using var doc = System.Text.Json.JsonDocument.Parse(line);
+                        if (!doc.RootElement.TryGetProperty("id", out var idEl) || idEl.GetString() != id) continue;
+                        if (!doc.RootElement.TryGetProperty("data", out var dataEl)) continue;
+                        return dataEl.Deserialize<RequestFullRecord>();
+                    }
+                    catch { /* malformed line */ }
+                }
+            }
+            catch { /* file read error */ }
+        }
+        return null;
+    }
+
     public string? CurrentFilePath()
     {
         var logsDir = Path.Combine(_dataDir, "logs");

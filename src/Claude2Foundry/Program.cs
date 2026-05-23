@@ -359,7 +359,7 @@ app.MapPost("/v1/messages", async (
             return ErrorResult(ErrorMapping.AdapterError("api_error", ex.Message), 500, ctx);
         }
 
-        sink.Emit(new ResponseSentEvent(correlationId, (int)sw.ElapsedMilliseconds, null));
+        sink.Emit(new ResponseSentEvent(correlationId, (int)sw.ElapsedMilliseconds, anthropicResp));
         sink.Finalize(correlationId);
 
         logger.LogInformation("<= req={CorrelationId} status=200 elapsed={Elapsed}ms in={In} out={Out} stream=false",

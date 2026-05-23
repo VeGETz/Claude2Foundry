@@ -255,11 +255,19 @@ public static class AdminApi
     }
 
     // GET /api/admin/events/full/{id}
-    private static IResult GetEventsFull(string id, FullBodyCache cache)
+    private static async Task<IResult> GetEventsFull(
+        string id,
+        FullBodyCache cache,
+        JsonlWriter jsonlWriter,
+        CancellationToken ct)
     {
         var record = cache.Get(id);
-        if (record is null) return Results.Json(new { expired = true });
-        return Results.Json(record);
+        if (record is not null) return Results.Json(record);
+
+        var recovered = await jsonlWriter.FindByIdAsync(id, ct);
+        if (recovered is not null) return Results.Json(recovered);
+
+        return Results.Json(new { expired = true });
     }
 
     // POST /api/admin/capture-mode
