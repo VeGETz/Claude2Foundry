@@ -23,6 +23,7 @@ artifacts/
 
 # Publish output
 publish/
+publish-out/
 
 # Test results
 TestResults/
@@ -63,4 +64,4 @@ ui/dist/
 # pnpm workspace root
 node_modules/
 .claude/
-.cuade/worktrees
+.claude/worktrees/
