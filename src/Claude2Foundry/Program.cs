@@ -89,7 +89,8 @@ builder.Services.AddSingleton(sp =>
 {
     var jsonlWriter = sp.GetRequiredService<JsonlWriter>();
     var bodyCache = sp.GetRequiredService<FullBodyCache>();
-    return new RequestCapturePipeline(jsonlWriter, bodyCache);
+    var pipelineLogger = sp.GetRequiredService<ILogger<RequestCapturePipeline>>();
+    return new RequestCapturePipeline(jsonlWriter, bodyCache, pipelineLogger);
 });
 builder.Services.AddSingleton<IRequestCaptureSink>(sp =>
     sp.GetRequiredService<RequestCapturePipeline>());
@@ -232,7 +233,7 @@ app.MapPost("/v1/messages", async (
         req.Model,
         req.Stream == true,
         RequestRecordBuilder.RedactHeaders(ctx.Request.Headers),
-        req));
+        JsonSnapshot.Take(req)));
 
     ChatCompletionRequest openaiReq;
     string resolvedTarget;
@@ -245,7 +246,7 @@ app.MapPost("/v1/messages", async (
     }
 
     // Emit request.translated
-    sink.Emit(new RequestTranslatedEvent(correlationId, resolvedTarget, openaiReq));
+    sink.Emit(new RequestTranslatedEvent(correlationId, resolvedTarget, JsonSnapshot.Take(openaiReq)));
 
     if (logger.IsEnabled(LogLevel.Debug))
         logger.LogDebug("req={CorrelationId} OpenAI request: {Body}", correlationId,
@@ -302,10 +303,10 @@ app.MapPost("/v1/messages", async (
                 }
             }
             // Emit captured raw OpenAI chunks
-            sink.Emit(new FoundryResponseReceivedEvent(correlationId, rawChunks.Count > 0 ? rawChunks : null));
+            sink.Emit(new FoundryResponseReceivedEvent(correlationId, rawChunks.Count > 0 ? JsonSnapshot.Take(rawChunks) : null));
             // Emit assembled: store SSE frames so the drawer can show them
             sink.Emit(new ResponseSentEvent(correlationId, (int)sw.ElapsedMilliseconds,
-                sseFrames.Count > 0 ? new { frames = sseFrames } : null));
+                sseFrames.Count > 0 ? JsonSnapshot.Take(new { frames = sseFrames }) : null));
             sink.Finalize(correlationId);
         }
         catch (OperationCanceledException)
@@ -369,7 +370,7 @@ app.MapPost("/v1/messages", async (
         }
 
         // Emit raw Foundry (OpenAI) response
-        sink.Emit(new FoundryResponseReceivedEvent(correlationId, upstream));
+        sink.Emit(new FoundryResponseReceivedEvent(correlationId, JsonSnapshot.Take(upstream)));
 
         // Emit foundry.complete
         var usage = upstream.Usage;
@@ -391,7 +392,7 @@ app.MapPost("/v1/messages", async (
             return ErrorResult(ErrorMapping.AdapterError("api_error", ex.Message), 500, ctx);
         }
 
-        sink.Emit(new ResponseSentEvent(correlationId, (int)sw.ElapsedMilliseconds, anthropicResp));
+        sink.Emit(new ResponseSentEvent(correlationId, (int)sw.ElapsedMilliseconds, JsonSnapshot.Take(anthropicResp)));
         sink.Finalize(correlationId);
 
         logger.LogInformation("<= req={CorrelationId} status=200 elapsed={Elapsed}ms in={In} out={Out} stream=false",

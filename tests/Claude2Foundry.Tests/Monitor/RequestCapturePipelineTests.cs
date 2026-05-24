@@ -23,7 +23,7 @@ public class RequestCapturePipelineTests : IAsyncDisposable
         var monitor = new OptionsMonitorStub(options.Value);
         var jsonlWriter = new JsonlWriter(_tempDir, monitor, NullLogger<JsonlWriter>.Instance);
         _bodyCache = new FullBodyCache();
-        _pipeline = new RequestCapturePipeline(jsonlWriter, _bodyCache);
+        _pipeline = new RequestCapturePipeline(jsonlWriter, _bodyCache, NullLogger<RequestCapturePipeline>.Instance);
         _pipeline.Start(_cts.Token);
     }
 

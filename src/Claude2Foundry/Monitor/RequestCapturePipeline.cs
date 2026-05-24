@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading.Channels;
+using Microsoft.Extensions.Logging;
 
 namespace Claude2Foundry.Monitor;
 
@@ -24,6 +25,7 @@ public sealed class RequestCapturePipeline : IRequestCaptureSink, IAsyncDisposab
 
     private readonly JsonlWriter _jsonlWriter;
     private readonly FullBodyCache _bodyCache;
+    private readonly ILogger<RequestCapturePipeline> _logger;
     // Accumulates per-request bodies; only touched by the single-reader background task
     private readonly Dictionary<string, RequestFullRecord> _accum = new();
     private Task? _backgroundTask;
@@ -32,10 +34,11 @@ public sealed class RequestCapturePipeline : IRequestCaptureSink, IAsyncDisposab
     public int RingOccupancy { get { lock (_ringLock) return _ring.Count; } }
     public int RingCapacityMax => RingCapacity;
 
-    public RequestCapturePipeline(JsonlWriter jsonlWriter, FullBodyCache bodyCache)
+    public RequestCapturePipeline(JsonlWriter jsonlWriter, FullBodyCache bodyCache, ILogger<RequestCapturePipeline> logger)
     {
         _jsonlWriter = jsonlWriter;
         _bodyCache = bodyCache;
+        _logger = logger;
     }
 
     public void Start(CancellationToken appStopping)
@@ -59,7 +62,6 @@ public sealed class RequestCapturePipeline : IRequestCaptureSink, IAsyncDisposab
         var sink = new SubscriberSink(SubscriberQueueCapacity);
         lock (_subscriberLock) _subscribers.Add(sink);
 
-        // Emit replay snapshot immediately
         RingSummary[] snapshot;
         lock (_ringLock)
         {
@@ -69,7 +71,22 @@ public sealed class RequestCapturePipeline : IRequestCaptureSink, IAsyncDisposab
         }
 
         var seq = Interlocked.Increment(ref _sequence);
-        var replayJson = JsonSerializer.Serialize(new { records = snapshot });
+        // Project to camelCase so UI RequestSnapshotRecord contract matches.
+        var replayJson = JsonSerializer.Serialize(new
+        {
+            records = snapshot.Select(r => new
+            {
+                id = r.Id,
+                ts = r.Ts,
+                originalModel = r.OriginalModel,
+                resolvedModel = r.ResolvedModel,
+                phase = r.Phase,
+                status = r.Status ?? "ok",
+                elapsedMs = r.ElapsedMs,
+                usage = r.Usage,
+                error = r.Error,
+            }).ToArray()
+        });
         sink.TryEnqueue(new SseFrame(seq, "replay.snapshot", replayJson), terminal: false);
 
         return sink.ReadAllAsync(ct, onDispose: () =>
@@ -83,19 +100,37 @@ public sealed class RequestCapturePipeline : IRequestCaptureSink, IAsyncDisposab
         await foreach (var evt in _ingest.Reader.ReadAllAsync(ct).ConfigureAwait(false))
         {
             try { HandleEvent(evt); }
-            catch { /* swallow to keep pipeline alive */ }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Capture pipeline HandleEvent failed for {EventType} id={Id}",
+                    evt.GetType().Name, evt.Id);
+            }
         }
     }
 
     private void HandleEvent(CaptureEvent evt)
     {
         bool isTerminal = evt is FoundryCompleteEvent or ResponseSentEvent or CaptureErrorEvent;
-        var (eventName, json) = SerializeEvent(evt);
-        var seq = Interlocked.Increment(ref _sequence);
-        var frame = new SseFrame(seq, eventName, json);
 
+        // Update ring + accumulator FIRST so bodies are captured even if SSE serialization fails.
         UpdateRing(evt);
         AccumulateBody(evt);
+
+        string eventName;
+        string json;
+        try
+        {
+            (eventName, json) = SerializeEvent(evt);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SerializeEvent failed for {EventType} id={Id}; event omitted from SSE stream",
+                evt.GetType().Name, evt.Id);
+            return;
+        }
+
+        var seq = Interlocked.Increment(ref _sequence);
+        var frame = new SseFrame(seq, eventName, json);
 
         lock (_subscriberLock)
         {
@@ -253,16 +288,7 @@ internal sealed class SubscriberSink(int capacity)
 
     public void TryEnqueue(SseFrame frame, bool terminal)
     {
-        if (terminal)
-        {
-            // Force-write: if queue is full, the oldest gets dropped (DropOldest mode)
-            // then retry once to ensure terminal event lands
-            _queue.Writer.TryWrite(frame);
-        }
-        else
-        {
-            _queue.Writer.TryWrite(frame);
-        }
+        _queue.Writer.TryWrite(frame);
     }
 
     public async IAsyncEnumerable<SseFrame> ReadAllAsync(
