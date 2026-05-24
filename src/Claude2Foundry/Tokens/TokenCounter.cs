@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Claude2Foundry.Config;
 using Claude2Foundry.Protocol.Anthropic;
 
@@ -21,45 +22,47 @@ public sealed class TokenCounter(ProxyConfig config)
         var parts = new List<string>();
         var imageCount = 0;
 
-        if (req.System.HasValue)
+        if (req.System is not null)
         {
-            var sys = req.System.Value;
-            if (sys.ValueKind == JsonValueKind.String)
-                parts.Add(sys.GetString() ?? "");
-            else if (sys.ValueKind == JsonValueKind.Array)
-                foreach (var b in sys.EnumerateArray())
-                    if (b.TryGetProperty("type", out var t) && t.GetString() == "text"
-                        && b.TryGetProperty("text", out var tx))
-                        parts.Add(tx.GetString() ?? "");
+            var sys = req.System;
+            if (sys is JsonValue sysVal && sysVal.TryGetValue<string>(out var sysStr))
+                parts.Add(sysStr);
+            else if (sys is JsonArray sysArr)
+                foreach (var bNode in sysArr)
+                    if (bNode is JsonObject b
+                        && b["type"]?.GetValue<string>() == "text"
+                        && b["text"]?.GetValue<string>() is { } tx)
+                        parts.Add(tx);
         }
 
         foreach (var tool in req.Tools ?? [])
         {
-            parts.Add($"{tool.Name}\n{tool.Description ?? ""}\n{JsonSerializer.Serialize(tool.InputSchema)}");
+            parts.Add($"{tool.Name}\n{tool.Description ?? ""}\n{tool.InputSchema?.ToJsonString() ?? "{}"}");
         }
 
         foreach (var msg in req.Messages)
         {
-            if (msg.Content.ValueKind == JsonValueKind.String)
+            if (msg.Content is JsonValue msgVal && msgVal.TryGetValue<string>(out var msgStr))
             {
-                parts.Add($"{msg.Role}: {msg.Content.GetString()}");
+                parts.Add($"{msg.Role}: {msgStr}");
                 continue;
             }
 
-            foreach (var block in msg.Content.EnumerateArray())
+            foreach (var blockNode in msg.Content.AsArray())
             {
-                var type = block.TryGetProperty("type", out var t) ? t.GetString() : null;
+                if (blockNode is not JsonObject block) continue;
+                var type = block["type"]?.GetValue<string>();
                 switch (type)
                 {
                     case "text":
-                        if (block.TryGetProperty("text", out var tx)) parts.Add(tx.GetString() ?? "");
+                        parts.Add(block["text"]?.GetValue<string>() ?? "");
                         break;
                     case "image":
                         imageCount++;
                         break;
                     case "tool_use":
-                        var name = block.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
-                        var inp = block.TryGetProperty("input", out var i) ? JsonSerializer.Serialize(i) : "{}";
+                        var name = block["name"]?.GetValue<string>() ?? "";
+                        var inp = block["input"]?.ToJsonString() ?? "{}";
                         parts.Add($"tool_use:{name}({inp})");
                         break;
                     case "tool_result":
@@ -68,10 +71,10 @@ public sealed class TokenCounter(ProxyConfig config)
                         imageCount += imgs;
                         break;
                     case "thinking":
-                        if (block.TryGetProperty("thinking", out var th)) parts.Add(th.GetString() ?? "");
+                        parts.Add(block["thinking"]?.GetValue<string>() ?? "");
                         break;
                     case "tool_reference":
-                        if (block.TryGetProperty("name", out var rn)) parts.Add(rn.GetString() ?? "");
+                        parts.Add(block["name"]?.GetValue<string>() ?? "");
                         break;
                 }
             }
@@ -80,20 +83,22 @@ public sealed class TokenCounter(ProxyConfig config)
         return (string.Join("\n", parts), imageCount);
     }
 
-    private static (string Text, int Images) ExtractToolResult(JsonElement block)
+    private static (string Text, int Images) ExtractToolResult(JsonObject block)
     {
-        if (!block.TryGetProperty("content", out var content))
+        var contentNode = block["content"];
+        if (contentNode is null)
             return ("", 0);
 
-        if (content.ValueKind == JsonValueKind.String)
-            return (content.GetString() ?? "", 0);
+        if (contentNode is JsonValue contentVal && contentVal.TryGetValue<string>(out var contentStr))
+            return (contentStr, 0);
 
         var texts = new List<string>();
         var imgs = 0;
-        foreach (var item in content.EnumerateArray())
+        foreach (var itemNode in contentNode.AsArray())
         {
-            var t = item.TryGetProperty("type", out var tp) ? tp.GetString() : null;
-            if (t == "text" && item.TryGetProperty("text", out var tx)) texts.Add(tx.GetString() ?? "");
+            if (itemNode is not JsonObject item) continue;
+            var t = item["type"]?.GetValue<string>();
+            if (t == "text") texts.Add(item["text"]?.GetValue<string>() ?? "");
             else if (t == "image") imgs++;
         }
         return (string.Join("", texts), imgs);

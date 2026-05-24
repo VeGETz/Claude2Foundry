@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace Claude2Foundry.Protocol.OpenAI;
@@ -46,7 +47,7 @@ public sealed class ChatCompletionRequest
     // string ("auto"|"required"|"none") or object {"type":"function","function":{"name":...}}
     [JsonPropertyName("tool_choice")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public JsonElement? ToolChoice { get; init; }
+    public JsonNode? ToolChoice { get; init; }
 
     [JsonPropertyName("parallel_tool_calls")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -73,10 +74,10 @@ public sealed class ChatMessage
     [JsonPropertyName("role")]
     public required string Role { get; init; }
 
-    // string | List<ChatContentPart> — use JsonElement, handle at use site
+    // string | List<ChatContentPart> — use JsonNode, handle at use site
     [JsonPropertyName("content")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public JsonElement? Content { get; init; }
+    public JsonNode? Content { get; init; }
 
     [JsonPropertyName("tool_calls")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -131,7 +132,7 @@ public sealed class ChatFunction
     public string? Description { get; init; }
 
     [JsonPropertyName("parameters")]
-    public JsonElement Parameters { get; init; }
+    public JsonNode? Parameters { get; init; }
 }
 
 public sealed class ToolCall

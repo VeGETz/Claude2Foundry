@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Claude2Foundry.Config;
 using Claude2Foundry.Protocol.Anthropic;
 using Claude2Foundry.Protocol.OpenAI;
@@ -210,7 +211,7 @@ public sealed class StreamTranslator(ProxyConfig config)
         {
             "text" => new AnthropicContentBlock { Type = "text", Text = "" },
             "thinking" => new AnthropicContentBlock { Type = "thinking", Thinking = "", Signature = "" },
-            "tool_use" => new AnthropicContentBlock { Type = "tool_use", Id = toolUseId!, Name = toolName!, Input = JsonDocument.Parse("{}").RootElement },
+            "tool_use" => new AnthropicContentBlock { Type = "tool_use", Id = toolUseId!, Name = toolName!, Input = JsonNode.Parse("{}") },
             _ => throw new InvalidOperationException($"Unknown block type {type}")
         };
 

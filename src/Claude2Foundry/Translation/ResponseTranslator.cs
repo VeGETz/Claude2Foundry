@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Claude2Foundry.Config;
 using Claude2Foundry.Errors;
 using Claude2Foundry.Protocol.Anthropic;
@@ -62,16 +63,16 @@ public sealed class ResponseTranslator(ProxyConfig config, ILogger<ResponseTrans
 
         foreach (var tc in msg.ToolCalls ?? [])
         {
-            JsonElement input;
+            JsonNode? input;
             try
             {
-                input = JsonDocument.Parse(tc.Function.Arguments).RootElement;
+                input = JsonNode.Parse(tc.Function.Arguments);
             }
             catch (JsonException ex)
             {
                 logger.LogWarning("Failed to parse tool call arguments for '{Name}': {Args} — {Error}",
                     tc.Function.Name, tc.Function.Arguments, ex.Message);
-                input = JsonDocument.Parse("{}").RootElement;
+                input = JsonNode.Parse("{}");
             }
 
             content.Add(new AnthropicContentBlock

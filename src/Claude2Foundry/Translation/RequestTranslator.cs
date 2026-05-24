@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Claude2Foundry.Config;
 using Claude2Foundry.Protocol.Anthropic;
 using Claude2Foundry.Protocol.OpenAI;
@@ -53,23 +54,24 @@ public sealed class RequestTranslator(ProxyConfig config, ILogger<RequestTransla
         };
     }
 
-    private void BuildSystemMessage(JsonElement? system, List<ChatMessage> messages)
+    private void BuildSystemMessage(JsonNode? system, List<ChatMessage> messages)
     {
         if (system is null) return;
 
         string? content = null;
-        if (system.Value.ValueKind == JsonValueKind.String)
+        if (system is JsonValue sysVal && sysVal.TryGetValue<string>(out var sysStr))
         {
-            content = system.Value.GetString();
+            content = sysStr;
         }
-        else if (system.Value.ValueKind == JsonValueKind.Array)
+        else if (system is JsonArray sysArr)
         {
             var parts = new List<string>();
-            foreach (var block in system.Value.EnumerateArray())
+            foreach (var blockNode in sysArr)
             {
-                var type = block.TryGetProperty("type", out var t) ? t.GetString() : null;
+                if (blockNode is not JsonObject block) continue;
+                var type = block["type"]?.GetValue<string>();
                 if (type != "text") continue;
-                var text = block.TryGetProperty("text", out var tx) ? tx.GetString() : null;
+                var text = block["text"]?.GetValue<string>();
                 if (string.IsNullOrEmpty(text)) continue;
                 if (text.StartsWith("x-anthropic-billing-header", StringComparison.OrdinalIgnoreCase)) continue;
                 parts.Add(text);
@@ -86,9 +88,9 @@ public sealed class RequestTranslator(ProxyConfig config, ILogger<RequestTransla
     {
         foreach (var msg in anthropicMsgs)
         {
-            if (msg.Content.ValueKind == JsonValueKind.String)
+            if (msg.Content is JsonValue msgVal && msgVal.TryGetValue<string>(out var msgStr))
             {
-                messages.Add(MakeStringMessage(msg.Role, msg.Content.GetString()!));
+                messages.Add(MakeStringMessage(msg.Role, msgStr));
                 continue;
             }
 
@@ -97,33 +99,34 @@ public sealed class RequestTranslator(ProxyConfig config, ILogger<RequestTransla
             var reasoningParts = new List<string>();
             var extraMessages = new List<ChatMessage>();
 
-            foreach (var block in msg.Content.EnumerateArray())
+            foreach (var blockNode in msg.Content.AsArray())
             {
-                var type = block.TryGetProperty("type", out var t) ? t.GetString() : null;
+                if (blockNode is not JsonObject block) continue;
+                var type = block["type"]?.GetValue<string>();
 
                 switch (type)
                 {
                     case "text":
-                        var text = block.TryGetProperty("text", out var tx) ? tx.GetString() : null;
+                        var text = block["text"]?.GetValue<string>();
                         if (!string.IsNullOrEmpty(text))
                             contentParts.Add(new ChatContentPart { Type = "text", Text = text });
                         WarnStrip("cache_control", block);
                         break;
 
                     case "image":
-                        if (block.TryGetProperty("source", out var src))
+                        if (block["source"] is JsonNode srcNode)
                             contentParts.Add(new ChatContentPart
                             {
                                 Type = "image_url",
-                                ImageUrl = new ChatImageUrl { Url = ConvertImageSource(src) }
+                                ImageUrl = new ChatImageUrl { Url = ConvertImageSource(srcNode) }
                             });
                         break;
 
                     case "tool_use" when msg.Role == "assistant":
-                        var toolId = block.TryGetProperty("id", out var tid) ? tid.GetString() ?? $"call_{Guid.NewGuid():N}" : $"call_{Guid.NewGuid():N}";
-                        var toolName = block.TryGetProperty("name", out var tn) ? tn.GetString() ?? "" : "";
-                        var inputJson = block.TryGetProperty("input", out var inp)
-                            ? JsonSerializer.Serialize(inp)
+                        var toolId = block["id"]?.GetValue<string>() ?? $"call_{Guid.NewGuid():N}";
+                        var toolName = block["name"]?.GetValue<string>() ?? "";
+                        var inputJson = block["input"] is JsonNode inp
+                            ? inp.ToJsonString()
                             : "{}";
                         toolCalls.Add(new ToolCall
                         {
@@ -137,7 +140,7 @@ public sealed class RequestTranslator(ProxyConfig config, ILogger<RequestTransla
                         break;
 
                     case "thinking" when msg.Role == "assistant":
-                        if (block.TryGetProperty("thinking", out var th) && th.GetString() is { } thinkText)
+                        if (block["thinking"]?.GetValue<string>() is { } thinkText)
                             reasoningParts.Add(thinkText);
                         break;
 
@@ -156,7 +159,7 @@ public sealed class RequestTranslator(ProxyConfig config, ILogger<RequestTransla
                 {
                     Role = "assistant",
                     Content = contentParts.Count > 0
-                        ? JsonSerializer.SerializeToElement(contentParts, AppSerializerContext.Default.ListChatContentPart)
+                        ? JsonSerializer.SerializeToNode(contentParts, AppSerializerContext.Default.ListChatContentPart)
                         : null,
                     ToolCalls = toolCalls.Count > 0 ? toolCalls : null,
                     ReasoningContent = reasoningParts.Count > 0 ? string.Join("\n", reasoningParts) : null,
@@ -172,7 +175,7 @@ public sealed class RequestTranslator(ProxyConfig config, ILogger<RequestTransla
                         : new ChatMessage
                         {
                             Role = "user",
-                            Content = JsonSerializer.SerializeToElement(contentParts, AppSerializerContext.Default.ListChatContentPart)
+                            Content = JsonSerializer.SerializeToNode(contentParts, AppSerializerContext.Default.ListChatContentPart)
                         });
                 }
                 messages.AddRange(extraMessages);
@@ -204,7 +207,7 @@ public sealed class RequestTranslator(ProxyConfig config, ILogger<RequestTransla
                     {
                         Role = "tool",
                         ToolCallId = tc.Id,
-                        Content = JsonDocument.Parse("\"[No result available]\"").RootElement,
+                        Content = JsonValue.Create("[No result available]"),
                     });
                     insertAt++;
                 }
@@ -212,37 +215,38 @@ public sealed class RequestTranslator(ProxyConfig config, ILogger<RequestTransla
         }
     }
 
-    private static void ConvertToolResult(JsonElement block, List<ChatMessage> extraMessages)
+    private static void ConvertToolResult(JsonObject block, List<ChatMessage> extraMessages)
     {
-        var toolUseId = block.TryGetProperty("tool_use_id", out var tuid) ? tuid.GetString() ?? "" : "";
+        var toolUseId = block["tool_use_id"]?.GetValue<string>() ?? "";
 
-        if (!block.TryGetProperty("content", out var content))
+        var contentNode = block["content"];
+        if (contentNode is null)
         {
-            extraMessages.Add(new ChatMessage { Role = "tool", ToolCallId = toolUseId, Content = MakeStringElement("") });
+            extraMessages.Add(new ChatMessage { Role = "tool", ToolCallId = toolUseId, Content = MakeStringNode("") });
             return;
         }
 
-        if (content.ValueKind == JsonValueKind.String)
+        if (contentNode is JsonValue contentVal && contentVal.TryGetValue<string>(out var contentStr))
         {
-            extraMessages.Add(new ChatMessage { Role = "tool", ToolCallId = toolUseId, Content = MakeStringElement(content.GetString()!) });
+            extraMessages.Add(new ChatMessage { Role = "tool", ToolCallId = toolUseId, Content = MakeStringNode(contentStr) });
             return;
         }
 
         // list of sub-blocks
         var textParts = new List<string>();
-        foreach (var item in content.EnumerateArray())
+        foreach (var itemNode in contentNode.AsArray())
         {
-            var itemType = item.TryGetProperty("type", out var it) ? it.GetString() : null;
+            if (itemNode is not JsonObject item) continue;
+            var itemType = item["type"]?.GetValue<string>();
             switch (itemType)
             {
                 case "text":
-                    if (item.TryGetProperty("text", out var txt))
-                        textParts.Add(txt.GetString() ?? "");
+                    textParts.Add(item["text"]?.GetValue<string>() ?? "");
                     break;
                 case "image":
-                    if (item.TryGetProperty("source", out var src))
+                    if (item["source"] is JsonNode srcNode)
                     {
-                        var url = ConvertImageSource(src);
+                        var url = ConvertImageSource(srcNode);
                         var imgPart = new ChatContentPart
                         {
                             Type = "image_url",
@@ -251,7 +255,7 @@ public sealed class RequestTranslator(ProxyConfig config, ILogger<RequestTransla
                         extraMessages.Add(new ChatMessage
                         {
                             Role = "user",
-                            Content = JsonSerializer.SerializeToElement(
+                            Content = JsonSerializer.SerializeToNode(
                                 new List<ChatContentPart> { imgPart },
                                 AppSerializerContext.Default.ListChatContentPart)
                         });
@@ -261,7 +265,7 @@ public sealed class RequestTranslator(ProxyConfig config, ILogger<RequestTransla
         }
 
         var toolText = string.Join("", textParts);
-        extraMessages.Insert(0, new ChatMessage { Role = "tool", ToolCallId = toolUseId, Content = MakeStringElement(toolText) });
+        extraMessages.Insert(0, new ChatMessage { Role = "tool", ToolCallId = toolUseId, Content = MakeStringNode(toolText) });
     }
 
     private ChatCompletionRequest BuildBaseRequest(
@@ -318,48 +322,46 @@ public sealed class RequestTranslator(ProxyConfig config, ILogger<RequestTransla
             {
                 Name = t.Name,
                 Description = string.IsNullOrEmpty(t.Description) ? t.Name : t.Description,
-                Parameters = t.InputSchema.ValueKind == System.Text.Json.JsonValueKind.Undefined
-                    ? JsonDocument.Parse("{}").RootElement
-                    : t.InputSchema,
+                Parameters = t.InputSchema ?? JsonNode.Parse("{}"),
             }
         }).ToList();
     }
 
-    private JsonElement? ConvertToolChoice(AnthropicToolChoice? tc, List<AnthropicTool>? tools)
+    private JsonNode? ConvertToolChoice(AnthropicToolChoice? tc, List<AnthropicTool>? tools)
     {
         if (tc is null) return null;
 
         return tc.Type switch
         {
-            "auto" => MakeStringElement("auto"),
-            "any" => MakeStringElement("required"),
-            "none" => MakeStringElement("none"),
-            "tool" => JsonSerializer.SerializeToElement(
+            "auto" => MakeStringNode("auto"),
+            "any" => MakeStringNode("required"),
+            "none" => MakeStringNode("none"),
+            "tool" => JsonSerializer.SerializeToNode(
                 new { type = "function", function = new { name = tc.Name } }),
             _ => null,
         };
     }
 
-    private static string ConvertImageSource(JsonElement source)
+    private static string ConvertImageSource(JsonNode source)
     {
-        var srcType = source.TryGetProperty("type", out var st) ? st.GetString() : null;
+        var srcType = (source as JsonObject)?["type"]?.GetValue<string>();
         if (srcType == "url")
-            return source.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "";
+            return (source as JsonObject)?["url"]?.GetValue<string>() ?? "";
 
-        var mediaType = source.TryGetProperty("media_type", out var mt) ? mt.GetString() ?? "image/jpeg" : "image/jpeg";
-        var data = source.TryGetProperty("data", out var d) ? d.GetString() ?? "" : "";
+        var mediaType = (source as JsonObject)?["media_type"]?.GetValue<string>() ?? "image/jpeg";
+        var data = (source as JsonObject)?["data"]?.GetValue<string>() ?? "";
         return $"data:{mediaType};base64,{data}";
     }
 
     private static ChatMessage MakeStringMessage(string role, string content) =>
-        new() { Role = role, Content = MakeStringElement(content) };
+        new() { Role = role, Content = MakeStringNode(content) };
 
-    private static JsonElement MakeStringElement(string value) =>
-        JsonDocument.Parse($"\"{JsonEncodedText.Encode(value)}\"").RootElement;
+    private static JsonNode MakeStringNode(string value) =>
+        JsonValue.Create(value)!;
 
-    private void WarnStrip(string field, JsonElement block)
+    private void WarnStrip(string field, JsonObject block)
     {
-        if (block.TryGetProperty("cache_control", out _))
+        if (block.ContainsKey("cache_control"))
             WarnOnce("strip:cache_control", "cache_control markers stripped (not supported by Foundry)");
     }
 

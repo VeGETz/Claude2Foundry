@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Claude2Foundry.Config;
 using Claude2Foundry.Protocol.Anthropic;
 using Claude2Foundry.Translation;
@@ -24,12 +25,12 @@ public class RequestTranslatorTests
         return new RequestTranslator(cfg, NullLogger<RequestTranslator>.Instance);
     }
 
-    private static JsonElement StringEl(string s) =>
-        JsonSerializer.Deserialize<JsonElement>($"\"{s.Replace("\"", "\\\"")}\"");
+    private static JsonNode StringEl(string s) =>
+        JsonValue.Create(s)!;
 
     private static AnthropicMessagesRequest SimpleReq(string? systemText = null)
     {
-        JsonElement? sys = systemText is not null ? StringEl(systemText) : null;
+        JsonNode? sys = systemText is not null ? StringEl(systemText) : null;
         return new AnthropicMessagesRequest
         {
             Model = "claude-sonnet-4-6",
@@ -65,7 +66,7 @@ public class RequestTranslatorTests
     public void SystemAsBlockList_ConcatenatesText()
     {
         var t = BuildTranslator();
-        var sysBlocks = JsonSerializer.Deserialize<JsonElement>(
+        var sysBlocks = JsonNode.Parse(
             """[{"type":"text","text":"Block one"},{"type":"text","text":"Block two"}]""");
         var req = new AnthropicMessagesRequest
         {
@@ -77,7 +78,7 @@ public class RequestTranslatorTests
         var (openaiReq, _) = t.Translate(req);
 
         Assert.Equal(2, openaiReq.Messages.Count);
-        var sysContent = openaiReq.Messages[0].Content!.Value.GetString();
+        var sysContent = (openaiReq.Messages[0].Content as JsonValue)!.GetValue<string>();
         Assert.Contains("Block one", sysContent);
         Assert.Contains("Block two", sysContent);
     }
@@ -86,7 +87,7 @@ public class RequestTranslatorTests
     public void SystemBillingHeaderSkipped()
     {
         var t = BuildTranslator();
-        var sysBlocks = JsonSerializer.Deserialize<JsonElement>(
+        var sysBlocks = JsonNode.Parse(
             """[{"type":"text","text":"x-anthropic-billing-header: abc123"},{"type":"text","text":"Real prompt"}]""");
         var req = new AnthropicMessagesRequest
         {
@@ -96,7 +97,7 @@ public class RequestTranslatorTests
             System = sysBlocks,
         };
         var (openaiReq, _) = t.Translate(req);
-        var sysContent = openaiReq.Messages[0].Content!.Value.GetString();
+        var sysContent = (openaiReq.Messages[0].Content as JsonValue)!.GetValue<string>();
         Assert.DoesNotContain("x-anthropic-billing-header", sysContent);
         Assert.Contains("Real prompt", sysContent);
     }
@@ -105,8 +106,8 @@ public class RequestTranslatorTests
     public void ToolUseBlock_BecomesToolCall()
     {
         var t = BuildTranslator();
-        var content = JsonSerializer.Deserialize<JsonElement>(
-            """[{"type":"tool_use","id":"call_abc","name":"get_weather","input":{"city":"NYC"}}]""");
+        var content = JsonNode.Parse(
+            """[{"type":"tool_use","id":"call_abc","name":"get_weather","input":{"city":"NYC"}}]""")!;
         var req = new AnthropicMessagesRequest
         {
             Model = "claude-sonnet-4-6",
@@ -125,8 +126,8 @@ public class RequestTranslatorTests
     public void ToolResultBlock_BecomesToolMessage()
     {
         var t = BuildTranslator();
-        var content = JsonSerializer.Deserialize<JsonElement>(
-            """[{"type":"tool_result","tool_use_id":"call_abc","content":"Sunny, 72F"}]""");
+        var content = JsonNode.Parse(
+            """[{"type":"tool_result","tool_use_id":"call_abc","content":"Sunny, 72F"}]""")!;
         var req = new AnthropicMessagesRequest
         {
             Model = "claude-sonnet-4-6",
@@ -144,8 +145,8 @@ public class RequestTranslatorTests
     public void ThinkingBlock_BecomesReasoningContent()
     {
         var t = BuildTranslator();
-        var content = JsonSerializer.Deserialize<JsonElement>(
-            """[{"type":"thinking","thinking":"Let me think..."},{"type":"text","text":"Answer"}]""");
+        var content = JsonNode.Parse(
+            """[{"type":"thinking","thinking":"Let me think..."},{"type":"text","text":"Answer"}]""")!;
         var req = new AnthropicMessagesRequest
         {
             Model = "claude-sonnet-4-6",
@@ -167,12 +168,12 @@ public class RequestTranslatorTests
             Messages = [new AnthropicMessage { Role = "user", Content = StringEl("Use a tool") }],
             MaxTokens = 100,
             ToolChoice = new AnthropicToolChoice { Type = "any" },
-            Tools = [new AnthropicTool { Name = "test", InputSchema = JsonDocument.Parse("{}").RootElement }],
+            Tools = [new AnthropicTool { Name = "test", InputSchema = JsonNode.Parse("{}") }],
         };
         var (openaiReq, _) = t.Translate(req);
 
         Assert.NotNull(openaiReq.ToolChoice);
-        Assert.Equal("required", openaiReq.ToolChoice!.Value.GetString());
+        Assert.Equal("required", (openaiReq.ToolChoice as JsonValue)!.GetValue<string>());
     }
 
     [Fact]
@@ -187,7 +188,7 @@ public class RequestTranslatorTests
             ToolChoice = new AnthropicToolChoice { Type = "none" },
         };
         var (openaiReq, _) = t.Translate(req);
-        Assert.Equal("none", openaiReq.ToolChoice!.Value.GetString());
+        Assert.Equal("none", (openaiReq.ToolChoice as JsonValue)!.GetValue<string>());
     }
 
     [Fact]

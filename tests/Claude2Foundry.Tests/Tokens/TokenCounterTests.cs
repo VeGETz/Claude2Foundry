@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Claude2Foundry.Config;
 using Claude2Foundry.Protocol.Anthropic;
 using Claude2Foundry.Tokens;
@@ -17,8 +18,8 @@ public class TokenCounterTests
         Tokenizers = new() { ["DeepSeek-V3"] = new TokenizerConfig { Source = "TiktokenCl100k" } },
     });
 
-    private static JsonElement StringEl(string s) =>
-        JsonSerializer.Deserialize<JsonElement>($"\"{s.Replace("\"", "\\\"")}\"");
+    private static JsonNode StringEl(string s) =>
+        JsonValue.Create(s)!;
 
     [Fact]
     public void SimpleTextMessages_ReturnsPositiveCount()
@@ -56,8 +57,8 @@ public class TokenCounterTests
     public void ImageBlock_Counts1500()
     {
         var counter = BuildCounter();
-        var content = JsonSerializer.Deserialize<JsonElement>(
-            """[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"abc"}}]""");
+        var content = JsonNode.Parse(
+            """[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"abc"}}]""")!;
         var req = new AnthropicCountTokensRequest
         {
             Model = "claude-sonnet-4-6",
@@ -99,7 +100,7 @@ public class TokenCounterTests
                 {
                     Name = "get_weather",
                     Description = "Get current weather for a location",
-                    InputSchema = JsonDocument.Parse("""{"type":"object","properties":{"city":{"type":"string"}}}""").RootElement,
+                    InputSchema = JsonNode.Parse("""{"type":"object","properties":{"city":{"type":"string"}}}"""),
                 }
             ],
         };
@@ -115,12 +116,12 @@ public class TokenCounterTests
     public void ToolResultWithImage_CountsImageAnd1500()
     {
         var counter = BuildCounter();
-        var content = JsonSerializer.Deserialize<JsonElement>("""
+        var content = JsonNode.Parse("""
             [{"type":"tool_result","tool_use_id":"c1","content":[
                 {"type":"text","text":"Result text"},
                 {"type":"image","source":{"type":"base64","media_type":"image/png","data":"xyz"}}
             ]}]
-            """);
+            """)!;
         var req = new AnthropicCountTokensRequest
         {
             Model = "claude-sonnet-4-6",

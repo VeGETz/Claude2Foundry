@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace Claude2Foundry.Protocol.Anthropic;
@@ -16,7 +17,7 @@ public sealed class AnthropicMessagesRequest
 
     // string | List<AnthropicContentBlock>
     [JsonPropertyName("system")]
-    public JsonElement? System { get; init; }
+    public JsonNode? System { get; init; }
 
     [JsonPropertyName("stream")]
     public bool? Stream { get; init; }
@@ -52,7 +53,7 @@ public sealed class AnthropicMessagesRequest
     public bool? DisableParallelToolUse { get; init; }
 
     [JsonExtensionData]
-    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
+    public JsonObject? ExtensionData { get; set; }
 }
 
 public sealed class AnthropicCountTokensRequest
@@ -64,7 +65,7 @@ public sealed class AnthropicCountTokensRequest
     public required List<AnthropicMessage> Messages { get; init; }
 
     [JsonPropertyName("system")]
-    public JsonElement? System { get; init; }
+    public JsonNode? System { get; init; }
 
     [JsonPropertyName("tools")]
     public List<AnthropicTool>? Tools { get; init; }
@@ -80,7 +81,7 @@ public sealed class AnthropicMessage
 
     // string | List<AnthropicContentBlock>
     [JsonPropertyName("content")]
-    public required JsonElement Content { get; init; }
+    public required JsonNode Content { get; init; }
 }
 
 public sealed class AnthropicContentBlock
@@ -104,7 +105,7 @@ public sealed class AnthropicContentBlock
     public string? Name { get; init; }
 
     [JsonPropertyName("input")]
-    public JsonElement? Input { get; init; }
+    public JsonNode? Input { get; init; }
 
     // tool_result: content is string | List<AnthropicContentBlock>
     [JsonPropertyName("tool_use_id")]
@@ -112,7 +113,7 @@ public sealed class AnthropicContentBlock
 
     [JsonPropertyName("content")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public JsonElement? Content { get; init; }
+    public JsonNode? Content { get; init; }
 
     [JsonPropertyName("is_error")]
     public bool? IsError { get; init; }
@@ -153,7 +154,7 @@ public sealed class AnthropicTool
     public string? Description { get; init; }
 
     [JsonPropertyName("input_schema")]
-    public JsonElement InputSchema { get; init; }
+    public JsonNode? InputSchema { get; init; }
 }
 
 public sealed class AnthropicToolChoice
@@ -183,7 +184,7 @@ public sealed class AnthropicMetadata
     public string? UserId { get; init; }
 
     [JsonExtensionData]
-    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
+    public JsonObject? ExtensionData { get; set; }
 }
 
 // Response types
