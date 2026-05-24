@@ -79,9 +79,9 @@ public sealed class AnthropicAssembledTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Streaming_EventsFull_HasNullAnthropicAssembled()
+    public async Task Streaming_EventsFull_HasFramesInAnthropicAssembled()
     {
-        // Streaming path should emit null for anthropicAssembled (assembled on client side)
+        // Streaming path now populates anthropicAssembled with captured SSE frames
         var req = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
         {
             Content = new StringContent(
@@ -117,9 +117,10 @@ public sealed class AnthropicAssembledTests : IAsyncLifetime
 
         if (root.TryGetProperty("expired", out var expiredEl2) && expiredEl2.ValueKind == JsonValueKind.True)
             Assert.Fail($"Got expired=true sentinel, body={body}");
-        // anthropicAssembled is null for streaming (assembled on client side)
-        if (root.TryGetProperty("anthropicAssembled", out var assembled))
-            Assert.Equal(JsonValueKind.Null, assembled.ValueKind);
+        // anthropicAssembled now contains { frames: [...] } for streaming
+        Assert.True(root.TryGetProperty("anthropicAssembled", out var assembled),
+            $"Missing anthropicAssembled in streaming response: {body}");
+        Assert.NotEqual(JsonValueKind.Null, assembled.ValueKind);
     }
 }
 

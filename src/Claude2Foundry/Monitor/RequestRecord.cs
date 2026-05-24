@@ -94,6 +94,10 @@ public sealed record ResponseSentEvent(
     int ElapsedMs,
     object? AnthropicAssembled) : CaptureEvent(Id);
 
+public sealed record FoundryResponseReceivedEvent(
+    string Id,
+    object? OpenaiResponseBody) : CaptureEvent(Id);
+
 public sealed record CaptureErrorEvent(
     string Id,
     string Phase,

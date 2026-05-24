@@ -61,10 +61,10 @@ export function App() {
           <li><strong>Adapter Console</strong></li>
         </ul>
         <ul>
-          <li><a href="/">Config</a></li>
-          <li><a href="/monitor">Monitor</a></li>
-          <li><a href="/health">Health</a></li>
-          <li><a href="/test">Test</a></li>
+          <li><a href="/_ui/">Config</a></li>
+          <li><a href="/_ui/monitor">Monitor</a></li>
+          <li><a href="/_ui/health">Health</a></li>
+          <li><a href="/_ui/test">Test</a></li>
         </ul>
       </nav>
 
@@ -74,10 +74,10 @@ export function App() {
 
       <main class="container">
         <Router>
-          <Route path="/" component={Config} />
-          <Route path="/monitor" component={Monitor} />
-          <Route path="/health" component={Health} />
-          <Route path="/test" component={Test} />
+          <Route path="/_ui/" component={Config} />
+          <Route path="/_ui/monitor" component={Monitor} />
+          <Route path="/_ui/health" component={Health} />
+          <Route path="/_ui/test" component={Test} />
         </Router>
       </main>
 

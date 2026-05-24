@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading.Channels;
 
@@ -127,6 +128,11 @@ public sealed class RequestCapturePipeline : IRequestCaptureSink, IAsyncDisposab
                 _accum.Remove(e.Id);
                 break;
 
+            case FoundryResponseReceivedEvent e:
+                if (_accum.TryGetValue(e.Id, out var cur4))
+                    _accum[e.Id] = cur4 with { ResponseBody = e.OpenaiResponseBody };
+                break;
+
             case CaptureErrorEvent e:
                 var errPartial = _accum.TryGetValue(e.Id, out var cur3)
                     ? cur3
@@ -175,6 +181,7 @@ public sealed class RequestCapturePipeline : IRequestCaptureSink, IAsyncDisposab
         FoundryChunkEvent => s with { Phase = "streaming" },
         FoundryCompleteEvent e => s with { Phase = "complete", Status = "ok", Usage = e.Usage },
         ResponseSentEvent e => s with { Phase = "complete", Status = "ok", ElapsedMs = e.ElapsedMs },
+        FoundryResponseReceivedEvent => s,
         CaptureErrorEvent e => s with { Phase = "error", Status = "error", Error = e.Message },
         _ => s
     };
@@ -205,6 +212,10 @@ public sealed class RequestCapturePipeline : IRequestCaptureSink, IAsyncDisposab
             ResponseSentEvent e => ("response.sent", JsonSerializer.Serialize(new
             {
                 id = e.Id, elapsedMs = e.ElapsedMs, anthropicAssembled = e.AnthropicAssembled
+            })),
+            FoundryResponseReceivedEvent e => ("foundry.response.received", JsonSerializer.Serialize(new
+            {
+                id = e.Id, openaiResponseBody = e.OpenaiResponseBody
             })),
             CaptureErrorEvent e => ("error", JsonSerializer.Serialize(new
             {
@@ -255,7 +266,7 @@ internal sealed class SubscriberSink(int capacity)
     }
 
     public async IAsyncEnumerable<SseFrame> ReadAllAsync(
-        CancellationToken ct,
+        [EnumeratorCancellation] CancellationToken ct,
         Action? onDispose = null)
     {
         try

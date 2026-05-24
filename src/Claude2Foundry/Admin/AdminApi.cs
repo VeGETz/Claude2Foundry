@@ -19,13 +19,13 @@ public static class AdminApi
         routes.MapGet("/config", GetConfig);
         routes.MapGet("/config/schema", GetConfigSchema);
         routes.MapPost("/config", PostConfig);
-        routes.MapPost("/config/test-connection", PostTestConnection);
+        routes.MapPost("/config/test-connection", (Delegate)PostTestConnection);
         routes.MapPost("/restart", PostRestart);
         routes.MapGet("/health", GetHealth);
         routes.MapGet("/events", GetEvents);
         routes.MapGet("/events/full/{id}", GetEventsFull);
         routes.MapPost("/capture-mode", PostCaptureMode);
-        routes.MapPost("/test-request", PostTestRequest);
+        routes.MapPost("/test-request", (Delegate)PostTestRequest);
     }
 
     // GET /api/admin/config

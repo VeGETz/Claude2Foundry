@@ -13,8 +13,7 @@ namespace Claude2Foundry.Admin;
 public sealed class TestRequestRunner(
     RequestTranslator reqT,
     ResponseTranslator respT,
-    FoundryClient foundry,
-    ILogger<TestRequestRunner> logger)
+    FoundryClient foundry)
 {
     public async Task<TestRequestResult> RunAsync(AnthropicMessagesRequest req, CancellationToken ct)
     {

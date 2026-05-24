@@ -232,7 +232,7 @@ app.MapPost("/v1/messages", async (
         req.Model,
         req.Stream == true,
         RequestRecordBuilder.RedactHeaders(ctx.Request.Headers),
-        null));
+        req));
 
     ChatCompletionRequest openaiReq;
     string resolvedTarget;
@@ -245,7 +245,7 @@ app.MapPost("/v1/messages", async (
     }
 
     // Emit request.translated
-    sink.Emit(new RequestTranslatedEvent(correlationId, resolvedTarget, null));
+    sink.Emit(new RequestTranslatedEvent(correlationId, resolvedTarget, openaiReq));
 
     if (logger.IsEnabled(LogLevel.Debug))
         logger.LogDebug("req={CorrelationId} OpenAI request: {Body}", correlationId,
@@ -285,19 +285,27 @@ app.MapPost("/v1/messages", async (
         ctx.Response.Headers["X-Accel-Buffering"] = "no";
         ctx.Response.Headers["x-c2f-request-id"] = correlationId;
 
+        // Accumulate raw OpenAI chunks and Anthropic SSE frames for capture
+        var rawChunks = new List<ChatCompletionChunk>();
+        var sseFrames = new List<string>();
+
         try
         {
             if (hasFirst)
             {
-                await foreach (var frame in streamT.Translate(Reattach(enumerator.Current, enumerator, ct), req, resolvedTarget, ct, snapshot))
+                await foreach (var frame in streamT.Translate(TapChunks(Reattach(enumerator.Current, enumerator, ct), rawChunks), req, resolvedTarget, ct, snapshot))
                 {
-                    // Emit foundry.chunk for each SSE frame (best effort, parse delta from frame)
                     sink.Emit(new FoundryChunkEvent(correlationId, chunkSeq++, null, null, null));
+                    sseFrames.Add(frame);
                     await ctx.Response.WriteAsync(frame, ct);
                     await ctx.Response.Body.FlushAsync(ct);
                 }
             }
-            sink.Emit(new ResponseSentEvent(correlationId, (int)sw.ElapsedMilliseconds, null));
+            // Emit captured raw OpenAI chunks
+            sink.Emit(new FoundryResponseReceivedEvent(correlationId, rawChunks.Count > 0 ? rawChunks : null));
+            // Emit assembled: store SSE frames so the drawer can show them
+            sink.Emit(new ResponseSentEvent(correlationId, (int)sw.ElapsedMilliseconds,
+                sseFrames.Count > 0 ? new { frames = sseFrames } : null));
             sink.Finalize(correlationId);
         }
         catch (OperationCanceledException)
@@ -360,6 +368,9 @@ app.MapPost("/v1/messages", async (
             return ErrorResult(ErrorMapping.AdapterError("api_error", $"Internal error ({correlationId})"), 500, ctx);
         }
 
+        // Emit raw Foundry (OpenAI) response
+        sink.Emit(new FoundryResponseReceivedEvent(correlationId, upstream));
+
         // Emit foundry.complete
         var usage = upstream.Usage;
         sink.Emit(new FoundryCompleteEvent(
@@ -403,6 +414,18 @@ static async IAsyncEnumerable<ChatCompletionChunk> Reattach(
 {
     yield return first;
     while (await rest.MoveNextAsync()) yield return rest.Current;
+}
+
+static async IAsyncEnumerable<ChatCompletionChunk> TapChunks(
+    IAsyncEnumerable<ChatCompletionChunk> source,
+    List<ChatCompletionChunk> sink,
+    [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+{
+    await foreach (var chunk in source.WithCancellation(ct))
+    {
+        sink.Add(chunk);
+        yield return chunk;
+    }
 }
 
 static void LogStartupBanner(WebApplication app, IConfiguration config)

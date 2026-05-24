@@ -142,6 +142,39 @@ public class RequestCapturePipelineTests : IAsyncDisposable
         Assert.Equal("error", record!.Phase);
     }
 
+    [Fact]
+    public async Task AccumulateBody_Carries_AnthropicBody_From_RequestReceived()
+    {
+        var bodyCache = GetBodyCache();
+        var anthropicBody = new { model = "claude-test", messages = new[] { new { role = "user", content = "hi" } } };
+
+        _pipeline.Emit(new RequestReceivedEvent("req-ant", DateTimeOffset.UtcNow, "claude-test", false, [], anthropicBody));
+        _pipeline.Emit(new ResponseSentEvent("req-ant", 50, new { type = "message" }));
+
+        await Task.Delay(150);
+
+        var record = bodyCache.Get("req-ant");
+        Assert.NotNull(record);
+        Assert.NotNull(record!.AnthropicBody);
+    }
+
+    [Fact]
+    public async Task AccumulateBody_Carries_ResponseBody_From_FoundryResponseReceived()
+    {
+        var bodyCache = GetBodyCache();
+        var foundryResp = new { id = "chatcmpl-1", choices = new[] { new { index = 0, finish_reason = "stop" } } };
+
+        _pipeline.Emit(new RequestReceivedEvent("req-fr", DateTimeOffset.UtcNow, "claude-test", false, [], null));
+        _pipeline.Emit(new FoundryResponseReceivedEvent("req-fr", foundryResp));
+        _pipeline.Emit(new ResponseSentEvent("req-fr", 60, new { type = "message" }));
+
+        await Task.Delay(150);
+
+        var record = bodyCache.Get("req-fr");
+        Assert.NotNull(record);
+        Assert.NotNull(record!.ResponseBody);
+    }
+
     private FullBodyCache GetBodyCache() => _bodyCache;
 
     private sealed class OptionsMonitorStub(ProxyConfig value) : IOptionsMonitor<ProxyConfig>
