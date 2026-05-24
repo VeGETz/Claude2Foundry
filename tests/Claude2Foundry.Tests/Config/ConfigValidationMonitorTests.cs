@@ -1,5 +1,4 @@
 using Claude2Foundry.Config;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Claude2Foundry.Tests.Config;
 
@@ -12,29 +11,12 @@ public class ConfigValidationMonitorTests
         DefaultModel = "test-model"
     };
 
-    [Theory]
-    [InlineData("Proxy.Monitor.CaptureMode", "invalid")]
-    public void InvalidCaptureMode_Returns_Issue(string expectedPath, string badMode)
-    {
-        var cfg = BaseConfig() with { Monitor = new MonitorConfig { CaptureMode = badMode } };
-        var issues = ConfigValidation.ValidateForApi(cfg);
-        Assert.Contains(issues, i => i.Path == expectedPath);
-    }
-
     [Fact]
-    public void LogMaxBytes_TooSmall_Returns_Issue()
+    public void MaxBodyBytes_Zero_Returns_Issue()
     {
-        var cfg = BaseConfig() with { Monitor = new MonitorConfig { LogMaxBytes = 100 } };
+        var cfg = BaseConfig() with { Monitor = new MonitorConfig { MaxBodyBytes = 0 } };
         var issues = ConfigValidation.ValidateForApi(cfg);
-        Assert.Contains(issues, i => i.Path == "Proxy.Monitor.LogMaxBytes");
-    }
-
-    [Fact]
-    public void LogRetentionDays_Negative_Returns_Issue()
-    {
-        var cfg = BaseConfig() with { Monitor = new MonitorConfig { LogRetentionDays = -1 } };
-        var issues = ConfigValidation.ValidateForApi(cfg);
-        Assert.Contains(issues, i => i.Path == "Proxy.Monitor.LogRetentionDays");
+        Assert.Contains(issues, i => i.Path == "Proxy.Monitor.MaxBodyBytes");
     }
 
     [Fact]
@@ -42,14 +24,20 @@ public class ConfigValidationMonitorTests
     {
         var cfg = BaseConfig() with
         {
-            Monitor = new MonitorConfig
-            {
-                CaptureMode = "full",
-                LogMaxBytes = 10_485_760,
-                LogRetentionDays = 14
-            }
+            Monitor = new MonitorConfig { Enabled = true, MaxBodyBytes = 10_485_760 }
         };
-        // Validate without env var requirement (base API validation)
+        var issues = ConfigValidation.ValidateForApi(cfg);
+        var monitorIssues = issues.Where(i => i.Path.StartsWith("Proxy.Monitor")).ToList();
+        Assert.Empty(monitorIssues);
+    }
+
+    [Fact]
+    public void MonitorDisabled_NoIssues()
+    {
+        var cfg = BaseConfig() with
+        {
+            Monitor = new MonitorConfig { Enabled = false, MaxBodyBytes = 10_485_760 }
+        };
         var issues = ConfigValidation.ValidateForApi(cfg);
         var monitorIssues = issues.Where(i => i.Path.StartsWith("Proxy.Monitor")).ToList();
         Assert.Empty(monitorIssues);

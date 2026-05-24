@@ -1,46 +1,39 @@
 import { useState, useEffect, useRef } from 'preact/hooks'
 import { SseClient } from '../api/events'
-import type { RequestSummaryFull, RequestSnapshotRecord, CaptureModeResponse } from '../api/contracts'
-import { adminFetch } from '../api/client'
+import type { MonitorRow, ReplayEvent, AppendEvent } from '../api/contracts'
 import { RequestRow } from '../components/RequestRow'
 import { RequestDrawer } from '../components/RequestDrawer'
 import { useApp } from '../App'
 
-type StatusFilter = 'any' | 'ok' | 'error' | 'streaming'
-
-function blankRecord(): RequestSummaryFull {
-  return {
-    id: '',
-    ts: new Date().toISOString(),
-    originalModel: '',
-    resolvedModel: '',
-    status: 'received',
-    elapsedMs: null,
-    usage: null,
-    error: null,
-    phase: 'received',
-    stream: false,
-  }
-}
+type StatusFilter = 'any' | 'ok' | 'error' | 'running'
 
 export function Monitor() {
   const { addToast } = useApp()
-  const [records, setRecords] = useState<RequestSummaryFull[]>([])
-  const [anthropicCache, setAnthropicCache] = useState<Record<string, unknown>>({})
-  const [selected, setSelected] = useState<RequestSummaryFull | null>(null)
+  const [records, setRecords] = useState<MonitorRow[]>([])
+  const [selected, setSelected] = useState<MonitorRow | null>(null)
   const [paused, setPaused] = useState(false)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('any')
   const [modelFilter, setModelFilter] = useState<string[]>([])
   const [errorOnly, setErrorOnly] = useState(false)
-  const [captureMode, setCaptureMode] = useState<'hybrid' | 'full'>('hybrid')
   const clientRef = useRef<SseClient | null>(null)
-  const lastIdKey = 'c2f-monitor-last-id'
 
-  const upsert = (update: Partial<RequestSummaryFull> & { id: string }) => {
+  const upsert = (id: string, update: Partial<MonitorRow>) => {
     setRecords(prev => {
-      const idx = prev.findIndex(r => r.id === update.id)
+      const idx = prev.findIndex(r => r.id === id)
       if (idx === -1) {
-        return [{ ...blankRecord(), ...update } as RequestSummaryFull, ...prev]
+        const blank: MonitorRow = {
+          id,
+          ts: new Date().toISOString(),
+          model: null,
+          originalModel: null,
+          mappedModel: null,
+          status: 'running',
+          latencyMs: null,
+          promptTokens: null,
+          completionTokens: null,
+          error: null,
+        }
+        return [{ ...blank, ...update }, ...prev]
       }
       const next = [...prev]
       next[idx] = { ...next[idx], ...update }
@@ -49,54 +42,48 @@ export function Monitor() {
   }
 
   useEffect(() => {
-    const since = sessionStorage.getItem(lastIdKey) ?? undefined
     const client = new SseClient({
-      since,
       onConnectionLost: () => addToast('Monitor disconnected, reconnecting…', 'error'),
       onReconnected: () => addToast('Monitor reconnected', 'success'),
     })
 
     client
-      .on('replay.snapshot', e => {
-        setRecords(
-          (e.records as RequestSnapshotRecord[]).map(r => ({ ...blankRecord(), ...r }))
-        )
-      })
-      .on('request.received', e => {
-        upsert({
-          id: e.id,
-          ts: e.ts,
-          originalModel: e.originalModel,
-          stream: e.stream,
-          status: 'received',
-          resolvedModel: '',
-          elapsedMs: null,
-          usage: null,
+      .on('replay', (e: ReplayEvent) => {
+        setRecords(e.items.map(item => ({
+          id: item.id,
+          ts: item.ts,
+          model: item.model ?? null,
+          originalModel: item.originalModel ?? null,
+          mappedModel: item.mappedModel ?? null,
+          status: item.status as 'running' | 'ok' | 'error',
+          latencyMs: item.latencyMs ?? null,
+          promptTokens: item.promptTokens ?? null,
+          completionTokens: item.completionTokens ?? null,
           error: null,
-          phase: 'received',
-        })
+        })))
       })
-      .on('request.translated', e => {
-        upsert({ id: e.id, resolvedModel: e.resolvedModel, status: 'translated', phase: 'translated' })
-      })
-      .on('foundry.request.sent', e => {
-        upsert({ id: e.id, status: 'foundry-sent' as RequestSummaryFull['status'], phase: 'foundry-sent' })
-      })
-      .on('foundry.chunk', e => {
-        upsert({ id: e.id, status: 'streaming' })
-      })
-      .on('foundry.complete', e => {
-        upsert({ id: e.id, usage: e.usage, status: 'complete', phase: 'complete' })
-      })
-      .on('response.sent', e => {
-        upsert({ id: e.id, elapsedMs: e.elapsedMs, status: 'complete', phase: 'complete' })
-        if (e.anthropicAssembled != null) {
-          setAnthropicCache(prev => ({ ...prev, [e.id]: e.anthropicAssembled }))
+      .on('append', (e: AppendEvent) => {
+        const d = e.data ?? {}
+        switch (e.kind) {
+          case 'request.received':
+            upsert(e.id, { ts: e.ts, model: e.model ?? null, originalModel: e.model ?? null, status: 'running' })
+            break
+          case 'request.translated':
+            upsert(e.id, { mappedModel: (d.mappedModel as string) ?? null })
+            break
+          case 'response.received':
+            upsert(e.id, {
+              promptTokens: (d.promptTokens as number) ?? null,
+              completionTokens: (d.completionTokens as number) ?? null,
+            })
+            break
+          case 'response.sent':
+            upsert(e.id, { status: 'ok', latencyMs: (d.elapsedMs as number) ?? null })
+            break
+          case 'request.error':
+            upsert(e.id, { status: 'error', error: (d.message as string) ?? null })
+            break
         }
-        sessionStorage.setItem(lastIdKey, Date.now().toString())
-      })
-      .on('error', e => {
-        upsert({ id: e.id, status: 'error', error: e.message, phase: 'error' })
       })
 
     clientRef.current = client
@@ -108,25 +95,13 @@ export function Monitor() {
     else clientRef.current?.resume()
   }, [paused])
 
-  const toggleCaptureMode = async (persist: boolean) => {
-    const next = captureMode === 'hybrid' ? 'full' : 'hybrid'
-    try {
-      await adminFetch<CaptureModeResponse>('/capture-mode', {
-        method: 'POST',
-        body: JSON.stringify({ mode: next, scope: persist ? 'persistent' : 'session' }),
-      })
-      setCaptureMode(next)
-    } catch {
-      addToast('Failed to change capture mode', 'error')
-    }
-  }
-
-  const allModels = [...new Set(records.map(r => r.originalModel))]
+  const allModels = [...new Set(records.map(r => r.originalModel ?? r.model ?? ''))]
 
   const filtered = records.filter(r => {
     if (statusFilter !== 'any' && r.status !== statusFilter) return false
-    if (modelFilter.length > 0 && !modelFilter.includes(r.originalModel)) return false
-    if (errorOnly && r.error === null && r.status !== 'error') return false
+    const model = r.originalModel ?? r.model ?? ''
+    if (modelFilter.length > 0 && !modelFilter.includes(model)) return false
+    if (errorOnly && r.status !== 'error') return false
     return true
   })
 
@@ -146,7 +121,7 @@ export function Monitor() {
               <option value="any">Any</option>
               <option value="ok">OK</option>
               <option value="error">Error</option>
-              <option value="streaming">Streaming</option>
+              <option value="running">Running</option>
             </select>
           </label>
           {allModels.length > 0 && (
@@ -173,12 +148,6 @@ export function Monitor() {
           <button class="outline small secondary" onClick={() => setRecords([])}>
             Clear
           </button>
-          <button class="outline small" onClick={() => toggleCaptureMode(false)}>
-            Capture: {captureMode}
-          </button>
-          <a href="#" onClick={e => { e.preventDefault(); void toggleCaptureMode(true) }}>
-            Make persistent
-          </a>
         </div>
       </div>
       {paused && <p><em>Paused — buffering incoming events</em></p>}
@@ -206,7 +175,6 @@ export function Monitor() {
       {selected && (
         <RequestDrawer
           record={selected}
-          anthropicAssembledCache={anthropicCache[selected.id] ?? null}
           onClose={() => setSelected(null)}
         />
       )}

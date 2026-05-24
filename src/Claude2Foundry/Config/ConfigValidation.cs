@@ -8,7 +8,6 @@ public static class ConfigValidation
 {
     private static readonly HashSet<string> ValidReasoningPolicies = ["none", "passthrough", "effort"];
     private static readonly HashSet<string> ValidTokenizerSources = ["TiktokenCl100k", "TiktokenO200k", "HuggingFace"];
-    private static readonly HashSet<string> ValidCaptureModes = ["hybrid", "full"];
     private static readonly Regex BackendUrlRegex =
         new(@"^https?://.+/openai/v1/?$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
@@ -62,13 +61,8 @@ public static class ConfigValidation
         if (cfg.Timeouts.StreamIdleSeconds < 1)
             errors.Add("Proxy:Timeouts:StreamIdleSeconds must be >= 1");
 
-        // Monitor section validation
-        if (!ValidCaptureModes.Contains(cfg.Monitor.CaptureMode))
-            errors.Add($"Proxy:Monitor:CaptureMode must be 'hybrid' or 'full'; got '{cfg.Monitor.CaptureMode}'");
-        if (cfg.Monitor.LogMaxBytes < 1_048_576)
-            errors.Add("Proxy:Monitor:LogMaxBytes must be >= 1048576 (1 MB)");
-        if (cfg.Monitor.LogRetentionDays < 0)
-            errors.Add("Proxy:Monitor:LogRetentionDays must be >= 0");
+        if (cfg.Monitor.MaxBodyBytes < 1)
+            errors.Add("Proxy:Monitor:MaxBodyBytes must be >= 1");
 
         if (errors.Count > 0)
         {
@@ -77,7 +71,7 @@ public static class ConfigValidation
             throw new InvalidOperationException($"Configuration invalid: {errors[0]}");
         }
 
-        // Warn but don't fail for missing policy/tokenizer entries
+        // Warn but do not fail for missing policy/tokenizer entries
         foreach (var target in cfg.ModelAliases.Values.Distinct())
         {
             if (!cfg.ReasoningPolicies.ContainsKey(target))
@@ -121,12 +115,8 @@ public static class ConfigValidation
         if (cfg.Timeouts.StreamIdleSeconds < 1)
             issues.Add(new("Proxy.Timeouts.StreamIdleSeconds", "Must be >= 1"));
 
-        if (!ValidCaptureModes.Contains(cfg.Monitor.CaptureMode))
-            issues.Add(new("Proxy.Monitor.CaptureMode", "Must be 'hybrid' or 'full'"));
-        if (cfg.Monitor.LogMaxBytes < 1_048_576)
-            issues.Add(new("Proxy.Monitor.LogMaxBytes", "Must be >= 1048576 (1 MB)"));
-        if (cfg.Monitor.LogRetentionDays < 0)
-            issues.Add(new("Proxy.Monitor.LogRetentionDays", "Must be >= 0"));
+        if (cfg.Monitor.MaxBodyBytes < 1)
+            issues.Add(new("Proxy.Monitor.MaxBodyBytes", "Must be >= 1"));
 
         return issues;
     }

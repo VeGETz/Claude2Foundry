@@ -65,15 +65,7 @@ export function Health() {
         <h3>Traffic</h3>
         <dl>
           <dt>In-flight</dt><dd>{data.inFlight}</dd>
-          <dt>Capture mode</dt><dd>{data.capture.mode} ({data.capture.scope})</dd>
-          <dt>Ring buffer</dt><dd>
-            {data.ringBuffer.occupancy}/{data.ringBuffer.capacity}
-            <progress
-              value={data.ringBuffer.occupancy}
-              max={data.ringBuffer.capacity}
-              style="margin-left:0.5rem;width:8rem"
-            />
-          </dd>
+          <dt>Monitor</dt><dd>{data.monitorEnabled ? '✓ enabled' : '✗ disabled'}</dd>
         </dl>
       </article>
 

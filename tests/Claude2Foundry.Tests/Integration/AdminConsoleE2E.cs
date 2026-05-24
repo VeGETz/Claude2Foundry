@@ -52,7 +52,7 @@ public sealed class AdminConsoleE2E : IAsyncLifetime
     [Fact]
     public async Task SseEndpoint_Returns200WithEventStreamContentType()
     {
-        using var req = new HttpRequestMessage(HttpMethod.Get, "/api/admin/events");
+        using var req = new HttpRequestMessage(HttpMethod.Get, "/api/admin/monitor/events");
         using var resp = await _client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.Equal("text/event-stream", resp.Content.Headers.ContentType?.MediaType);
@@ -147,7 +147,7 @@ public sealed class AdminConsoleE2E : IAsyncLifetime
                 ReasoningPolicies = new Dictionary<string, string>(),
                 Tokenizers = new Dictionary<string, object>(),
                 Timeouts = new { OutboundTotalSeconds = 30, StreamIdleSeconds = 30 },
-                Monitor = new { CaptureMode = "hybrid", LogMaxBytes = 104857600, LogRetentionDays = 0 }
+                Monitor = new { Enabled = true, MaxBodyBytes = 10485760 }
             }
         });
 }
@@ -173,7 +173,7 @@ internal sealed class ConsoleE2EFactory : WebApplicationFactory<Program>
                 ["Proxy:ApiKeyEnv"] = _apiKeyEnvName,
                 ["Proxy:DefaultModel"] = "test-model",
                 ["Proxy:ModelAliases:claude-test"] = "test-model",
-                ["Proxy:Monitor:LogRetentionDays"] = "0",
+                ["Proxy:Monitor:Enabled"] = "false",
             });
         });
 

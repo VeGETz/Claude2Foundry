@@ -49,12 +49,9 @@ public sealed record TimeoutsConfig
 
 public sealed record MonitorConfig
 {
-    [JsonPropertyName("CaptureMode")]
-    public string CaptureMode { get; init; } = "hybrid";
+    [JsonPropertyName("Enabled")]
+    public bool Enabled { get; init; } = true;
 
-    [JsonPropertyName("LogMaxBytes")]
-    public long LogMaxBytes { get; init; } = 104_857_600;
-
-    [JsonPropertyName("LogRetentionDays")]
-    public int LogRetentionDays { get; init; } = 7;
+    [JsonPropertyName("MaxBodyBytes")]
+    public long MaxBodyBytes { get; init; } = 10_485_760;
 }

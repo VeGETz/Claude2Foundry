@@ -14,28 +14,6 @@ public sealed class AdminApiIntegrationTests : IClassFixture<TestAdminFactory>
     public AdminApiIntegrationTests(TestAdminFactory factory) => _factory = factory;
 
     [Fact]
-    public async Task PostCaptureMode_MissingCsrfHeader_Returns400()
-    {
-        var client = _factory.CreateClient();
-        var content = new StringContent("""{"mode":"hybrid","scope":"session"}""", Encoding.UTF8, "application/json");
-        var response = await client.PostAsync("/api/admin/capture-mode", content);
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-    }
-
-    [Fact]
-    public async Task PostCaptureMode_ValidRequest_ResponseIncludesScope()
-    {
-        var client = _factory.CreateClient();
-        client.DefaultRequestHeaders.Add("X-C2F-Admin", "1");
-        var content = new StringContent("""{"mode":"hybrid","scope":"session"}""", Encoding.UTF8, "application/json");
-        var response = await client.PostAsync("/api/admin/capture-mode", content);
-        response.EnsureSuccessStatusCode();
-        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Equal("hybrid", body.RootElement.GetProperty("mode").GetString());
-        Assert.Equal("session", body.RootElement.GetProperty("scope").GetString());
-    }
-
-    [Fact]
     public async Task GetConfig_DoesNotExposeResolvedApiKeyValue()
     {
         var client = _factory.CreateClient();
@@ -80,7 +58,7 @@ public sealed class TestAdminFactory : WebApplicationFactory<Program>
                 ["Proxy:BackendUrl"] = "https://test.openai.azure.com/openai/v1/",
                 ["Proxy:ApiKeyEnv"] = ApiKeyEnvName,
                 ["Proxy:DefaultModel"] = "test-model",
-                ["Proxy:Monitor:LogRetentionDays"] = "0",
+                ["Proxy:Monitor:Enabled"] = "false",
             });
         });
         return base.CreateHost(builder);
@@ -104,7 +82,7 @@ public sealed class EmbeddedKeyFactory : WebApplicationFactory<Program>
                 ["Proxy:BackendUrl"] = "https://test.openai.azure.com/openai/v1/",
                 ["Proxy:ApiKeyEnv"] = ApiKeyValue,
                 ["Proxy:DefaultModel"] = "test-model",
-                ["Proxy:Monitor:LogRetentionDays"] = "0",
+                ["Proxy:Monitor:Enabled"] = "false",
             });
         });
         return base.CreateHost(builder);

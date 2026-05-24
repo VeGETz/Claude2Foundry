@@ -31,7 +31,7 @@ public class ConfigSchemaProviderTests
     }
 
     [Fact]
-    public void Schema_MonitorSection_HasCorrectEnums()
+    public void Schema_MonitorSection_HasEnabledAndMaxBodyBytes()
     {
         var json = ConfigSchemaProvider.Schema.ToJsonString();
         using var doc = JsonDocument.Parse(json);
@@ -40,10 +40,8 @@ public class ConfigSchemaProviderTests
             .GetProperty("Monitor")
             .GetProperty("properties");
 
-        var enumVals = monitorProps.GetProperty("CaptureMode").GetProperty("enum");
-        var vals = enumVals.EnumerateArray().Select(e => e.GetString()).ToList();
-        Assert.Contains("hybrid", vals);
-        Assert.Contains("full", vals);
+        Assert.True(monitorProps.TryGetProperty("Enabled", out _));
+        Assert.True(monitorProps.TryGetProperty("MaxBodyBytes", out _));
     }
 
     [Fact]

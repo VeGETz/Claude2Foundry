@@ -68,28 +68,21 @@ public static class ConfigSchemaProvider
             },
             "Monitor": {
               "type": "object",
-              "description": "Adapter Console capture and retention settings.",
+              "description": "Adapter Console request capture settings.",
               "properties": {
-                "CaptureMode": {
-                  "type": "string",
-                  "enum": ["hybrid", "full"],
-                  "default": "hybrid",
-                  "description": "hybrid: store summaries + 8 KB previews in the ring, full bodies in a short-TTL cache. full: store everything in the ring and JSONL."
+                "Enabled": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Enable JSONL request capture. When false, no file is created and no writes occur."
                 },
-                "LogMaxBytes": {
+                "MaxBodyBytes": {
                   "type": "integer",
-                  "minimum": 1048576,
-                  "default": 104857600,
-                  "description": "Per-file size cap for rolling JSONL request-capture files, in bytes."
-                },
-                "LogRetentionDays": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "default": 7,
-                  "description": "Number of days to retain rolling JSONL files. 0 disables persistence (in-memory ring only)."
+                  "minimum": 1,
+                  "default": 10485760,
+                  "description": "Per-body size cap in bytes. Bodies exceeding this are replaced with a truncation marker."
                 }
               },
-              "default": { "CaptureMode": "hybrid", "LogMaxBytes": 104857600, "LogRetentionDays": 7 }
+              "default": { "Enabled": true, "MaxBodyBytes": 10485760 }
             }
           },
           "$defs": {

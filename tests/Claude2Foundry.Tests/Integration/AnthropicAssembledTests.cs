@@ -2,11 +2,15 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Claude2Foundry.Config;
+using Claude2Foundry.Monitor;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Claude2Foundry.Tests.Integration;
 
@@ -34,9 +38,8 @@ public sealed class AnthropicAssembledTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task NonStreaming_EventsFull_HasAnthropicAssembled()
+    public async Task NonStreaming_MonitorDetail_HasAnthropicResponse()
     {
-        // Fire non-streaming request
         var req = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
         {
             Content = new StringContent(
@@ -55,33 +58,28 @@ public sealed class AnthropicAssembledTests : IAsyncLifetime
         var resp = await _client.SendAsync(req);
         resp.EnsureSuccessStatusCode();
 
-        // Extract correlation ID from response header
         Assert.True(resp.Headers.TryGetValues("x-c2f-request-id", out var ids));
         var requestId = ids!.First();
         Assert.NotEmpty(requestId);
 
-        // Wait for pipeline background task to process events
+        // Let writer task flush to disk
         await Task.Delay(300);
 
-        // Fetch full record
-        var fullResp = await _client.GetAsync($"/api/admin/events/full/{requestId}");
-        fullResp.EnsureSuccessStatusCode();
+        var detailResp = await _client.GetAsync($"/api/admin/monitor/{requestId}");
+        detailResp.EnsureSuccessStatusCode();
 
-        var body = await fullResp.Content.ReadAsStringAsync();
+        var body = await detailResp.Content.ReadAsStringAsync();
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;
 
-        if (root.TryGetProperty("expired", out var expiredEl) && expiredEl.ValueKind == JsonValueKind.True)
-            Assert.Fail($"Got expired=true sentinel, body={body}");
-        Assert.True(root.TryGetProperty("anthropicAssembled", out var assembled),
-            $"Missing anthropicAssembled in response: {body}");
+        Assert.True(root.TryGetProperty("anthropicResponse", out var assembled),
+            $"Missing anthropicResponse in response: {body}");
         Assert.NotEqual(JsonValueKind.Null, assembled.ValueKind);
     }
 
     [Fact]
-    public async Task Streaming_EventsFull_HasFramesInAnthropicAssembled()
+    public async Task Streaming_MonitorDetail_HasAnthropicResponse()
     {
-        // Streaming path now populates anthropicAssembled with captured SSE frames
         var req = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
         {
             Content = new StringContent(
@@ -105,21 +103,17 @@ public sealed class AnthropicAssembledTests : IAsyncLifetime
 
         // Drain stream fully
         await resp.Content.ReadAsStringAsync();
-
         await Task.Delay(300);
 
-        var fullResp = await _client.GetAsync($"/api/admin/events/full/{requestId}");
-        fullResp.EnsureSuccessStatusCode();
+        var detailResp = await _client.GetAsync($"/api/admin/monitor/{requestId}");
+        detailResp.EnsureSuccessStatusCode();
 
-        var body = await fullResp.Content.ReadAsStringAsync();
+        var body = await detailResp.Content.ReadAsStringAsync();
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;
 
-        if (root.TryGetProperty("expired", out var expiredEl2) && expiredEl2.ValueKind == JsonValueKind.True)
-            Assert.Fail($"Got expired=true sentinel, body={body}");
-        // anthropicAssembled now contains { frames: [...] } for streaming
-        Assert.True(root.TryGetProperty("anthropicAssembled", out var assembled),
-            $"Missing anthropicAssembled in streaming response: {body}");
+        Assert.True(root.TryGetProperty("anthropicResponse", out var assembled),
+            $"Missing anthropicResponse in streaming response: {body}");
         Assert.NotEqual(JsonValueKind.Null, assembled.ValueKind);
     }
 }
@@ -136,7 +130,7 @@ internal sealed class AssembledFactory : WebApplicationFactory<Program>
                 ["Proxy:ApiKeyEnv"] = "C2F_ASSEMBLED_TEST_KEY_XYZ",
                 ["Proxy:DefaultModel"] = "test-model",
                 ["Proxy:ModelAliases:claude-test"] = "test-model",
-                ["Proxy:Monitor:LogRetentionDays"] = "0",
+                ["Proxy:Monitor:Enabled"] = "true",
             });
         });
 
@@ -149,6 +143,17 @@ internal sealed class AssembledFactory : WebApplicationFactory<Program>
             {
                 BaseAddress = new Uri("https://test.openai.azure.com/openai/v1/"),
             });
+
+            // Isolate each factory instance to its own temp dir so parallel test
+            // runs don't race on PurgeOldFiles deleting each other's JSONL files.
+            var existingWriter = services.SingleOrDefault(d => d.ServiceType == typeof(JsonlWriter));
+            if (existingWriter is not null) services.Remove(existingWriter);
+            var tempDir = Path.Combine(Path.GetTempPath(), $"c2f-test-{Guid.NewGuid():N}");
+            services.AddSingleton<JsonlWriter>(sp => new JsonlWriter(
+                tempDir,
+                sp.GetRequiredService<IOptionsMonitor<ProxyConfig>>(),
+                sp.GetRequiredService<ILogger<JsonlWriter>>()
+            ));
         });
 
         return base.CreateHost(builder);

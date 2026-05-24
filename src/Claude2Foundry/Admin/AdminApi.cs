@@ -22,9 +22,9 @@ public static class AdminApi
         routes.MapPost("/config/test-connection", (Delegate)PostTestConnection);
         routes.MapPost("/restart", PostRestart);
         routes.MapGet("/health", GetHealth);
-        routes.MapGet("/events", GetEvents);
-        routes.MapGet("/events/full/{id}", GetEventsFull);
-        routes.MapPost("/capture-mode", PostCaptureMode);
+        routes.MapGet("/monitor/list", GetMonitorList);
+        routes.MapGet("/monitor/{id}", GetMonitorById);
+        routes.MapGet("/monitor/events", GetMonitorEvents);
         routes.MapPost("/test-request", (Delegate)PostTestRequest);
     }
 
@@ -159,8 +159,6 @@ public static class AdminApi
     private static async Task<IResult> GetHealth(
         FoundryHealthProbe probe,
         RestartCoordinator restart,
-        RequestCapturePipeline pipeline,
-        CaptureModeController captureMode,
         JsonlWriter jsonlWriter,
         IOptionsMonitor<ProxyConfig> options,
         [FromKeyedServices("dataDir")] string dataDir,
@@ -204,96 +202,76 @@ public static class AdminApi
             },
             config = new { proxy = MaskConfig(cfg), localFileError },
             inFlight = restart.InFlightCount,
-            ringBuffer = new { occupancy = pipeline.RingOccupancy, capacity = pipeline.RingCapacityMax },
-            capture = new { mode = captureMode.EffectiveMode, scope = "session" },
+            monitorEnabled = cfg.Monitor.Enabled,
             logFile,
             wrapperPresent = restart.WrapperPresent
         });
     }
 
-    // GET /api/admin/events
-    private static async Task GetEvents(
+    // GET /api/admin/monitor/list?limit=200&before=<id>
+    private static async Task<IResult> GetMonitorList(
         HttpContext ctx,
-        RequestCapturePipeline pipeline)
+        JsonlWriter jsonlWriter,
+        CancellationToken ct)
+    {
+        var limitStr = ctx.Request.Query["limit"].FirstOrDefault();
+        var limit = int.TryParse(limitStr, out var l) ? Math.Clamp(l, 1, 1000) : 200;
+        var before = ctx.Request.Query["before"].FirstOrDefault();
+
+        var result = await JsonlReader.ListAsync(jsonlWriter.CurrentFilePath(), limit, before, ct);
+        return Results.Json(result);
+    }
+
+    // GET /api/admin/monitor/{id}
+    private static async Task<IResult> GetMonitorById(
+        string id,
+        JsonlWriter jsonlWriter,
+        CancellationToken ct)
+    {
+        var detail = await JsonlReader.GetByIdAsync(jsonlWriter.CurrentFilePath(), id, ct);
+        return detail is not null ? Results.Json(detail) : Results.NotFound();
+    }
+
+    // GET /api/admin/monitor/events (SSE live tail)
+    private static async Task GetMonitorEvents(
+        HttpContext ctx,
+        JsonlWriter jsonlWriter,
+        CancellationToken ct)
     {
         ctx.Response.Headers.ContentType = "text/event-stream";
         ctx.Response.Headers.CacheControl = "no-cache";
         ctx.Response.Headers["X-Accel-Buffering"] = "no";
 
-        DateTimeOffset? since = null;
-        if (ctx.Request.Query.TryGetValue("since", out var sinceStr) &&
-            DateTimeOffset.TryParse(sinceStr, out var sinceVal))
-            since = sinceVal;
+        var limitStr = ctx.Request.Query["limit"].FirstOrDefault();
+        var replayLimit = int.TryParse(limitStr, out var l) ? Math.Clamp(l, 1, 500) : 50;
 
-        var ct = ctx.RequestAborted;
         var writer = ctx.Response.Body;
+        long seq = 0;
 
-        using var heartbeatTimer = new PeriodicTimer(TimeSpan.FromSeconds(15));
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                while (await heartbeatTimer.WaitForNextTickAsync(ct))
-                {
-                    await writer.WriteAsync(Encoding.UTF8.GetBytes(": ping\n\n"), ct);
-                    await writer.FlushAsync(ct);
-                }
-            }
-            catch { /* client disconnected */ }
-        }, ct);
-
+        // Subscribe before replay so we don't miss events
+        var sub = jsonlWriter.Subscribe();
         try
         {
-            await foreach (var frame in pipeline.SubscribeAsync(since, ct))
+            // Replay recent items (list shape, no bodies)
+            var replay = await JsonlReader.ListAsync(jsonlWriter.CurrentFilePath(), replayLimit, null, ct);
+            var replayJson = System.Text.Json.JsonSerializer.Serialize(replay);
+            var replayFrame = $"id: {seq++}\nevent: replay\ndata: {replayJson}\n\n";
+            await writer.WriteAsync(Encoding.UTF8.GetBytes(replayFrame), ct);
+            await writer.FlushAsync(ct);
+
+            // Live tail
+            await foreach (var line in sub.Reader.ReadAllAsync(ct))
             {
-                var sse = $"id: {frame.Seq}\nevent: {frame.Event}\ndata: {frame.Data}\n\n";
-                await writer.WriteAsync(Encoding.UTF8.GetBytes(sse), ct);
+                var frame = $"id: {seq++}\nevent: append\ndata: {line}\n\n";
+                await writer.WriteAsync(Encoding.UTF8.GetBytes(frame), ct);
                 await writer.FlushAsync(ct);
             }
         }
         catch (OperationCanceledException) { /* client disconnected */ }
-    }
-
-    // GET /api/admin/events/full/{id}
-    private static async Task<IResult> GetEventsFull(
-        string id,
-        FullBodyCache cache,
-        JsonlWriter jsonlWriter,
-        CancellationToken ct)
-    {
-        var record = cache.Get(id);
-        if (record is not null) return Results.Json(record);
-
-        var recovered = await jsonlWriter.FindByIdAsync(id, ct);
-        if (recovered is not null) return Results.Json(recovered);
-
-        return Results.Json(new { expired = true });
-    }
-
-    // POST /api/admin/capture-mode
-    private static async Task<IResult> PostCaptureMode(
-        HttpContext ctx,
-        CaptureModeController captureMode,
-        [FromKeyedServices("dataDir")] string dataDir)
-    {
-        JsonNode? body;
-        try { body = await JsonNode.ParseAsync(ctx.Request.Body); }
-        catch { return BadRequest("invalid_request", "Malformed JSON"); }
-
-        var mode = body?["mode"]?.GetValue<string>();
-        var scope = body?["scope"]?.GetValue<string>();
-
-        if (mode != "hybrid" && mode != "full")
-            return BadRequest("invalid_request", "mode must be 'hybrid' or 'full'");
-        if (scope != "session" && scope != "persistent")
-            return BadRequest("invalid_request", "scope must be 'session' or 'persistent'");
-
-        if (scope == "persistent")
-            await captureMode.SetPersistentAsync(dataDir, mode, ctx.RequestAborted);
-        else
-            captureMode.SetSession(mode);
-
-        return Results.Json(new { ok = true, mode, scope });
+        finally
+        {
+            jsonlWriter.Unsubscribe(sub);
+        }
     }
 
     // POST /api/admin/test-request

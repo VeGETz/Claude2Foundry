@@ -1,11 +1,13 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Claude2Foundry.Config;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
 namespace Claude2Foundry.Monitor;
 
-public sealed class JsonlWriter : IAsyncDisposable
+public sealed class JsonlWriter : IHostedService, IAsyncDisposable
 {
     private readonly Channel<string> _channel = Channel.CreateBounded<string>(new BoundedChannelOptions(4096)
     {
@@ -15,7 +17,10 @@ public sealed class JsonlWriter : IAsyncDisposable
     private readonly IOptionsMonitor<ProxyConfig> _options;
     private readonly string _dataDir;
     private readonly ILogger<JsonlWriter> _logger;
-    private Task? _backgroundTask;
+    private readonly List<Channel<string>> _subscribers = [];
+    private readonly Lock _subscribersLock = new();
+    private string? _currentFilePath;
+    private Task? _writerTask;
 
     public JsonlWriter(string dataDir, IOptionsMonitor<ProxyConfig> options, ILogger<JsonlWriter> logger)
     {
@@ -24,181 +29,149 @@ public sealed class JsonlWriter : IAsyncDisposable
         _logger = logger;
     }
 
-    public void Start(CancellationToken appStopping)
-    {
-        _backgroundTask = RunAsync(appStopping);
-        _ = RunRetentionSweepAsync(appStopping);
-    }
+    public bool Enabled => _options.CurrentValue.Monitor.Enabled;
+    public string? CurrentFilePath() => _currentFilePath;
 
-    public bool Write(string requestId, object record)
+    public Task StartAsync(CancellationToken cancellationToken)
     {
-        var monitor = _options.CurrentValue.Monitor;
-        if (monitor.LogRetentionDays == 0) return false;   // persistence disabled
+        if (!_options.CurrentValue.Monitor.Enabled) return Task.CompletedTask;
 
-        var line = JsonSerializer.Serialize(new { id = requestId, ts = DateTimeOffset.UtcNow, data = record });
-        return _channel.Writer.TryWrite(line);
-    }
-
-    public async Task DrainAsync()
-    {
-        _channel.Writer.TryComplete();
-        if (_backgroundTask is not null)
-            await _backgroundTask.ConfigureAwait(false);
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        _channel.Writer.TryComplete();
-        if (_backgroundTask is not null)
-            await _backgroundTask.ConfigureAwait(false);
-    }
-
-    private async Task RunAsync(CancellationToken ct)
-    {
         var logsDir = Path.Combine(_dataDir, "logs");
+        PurgeOldFiles(logsDir);
         Directory.CreateDirectory(logsDir);
 
-        StreamWriter? writer = null;
-        string? currentPath = null;
-        DateOnly currentDate = DateOnly.MinValue;
-        long currentBytes = 0;
-        int rotationSuffix = 1;
+        var bootId = $"{DateTime.UtcNow:yyyyMMdd-HHmmss}-{Environment.ProcessId}";
+        _currentFilePath = Path.Combine(logsDir, $"requests-{bootId}.jsonl");
 
+        _writerTask = RunAsync(_currentFilePath);
+        return Task.CompletedTask;
+    }
+
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        _channel.Writer.TryComplete();
+        if (_writerTask is not null)
+        {
+            try { await _writerTask.ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+        }
+    }
+
+    public async ValueTask DisposeAsync() => await StopAsync(CancellationToken.None);
+
+    public void Enqueue(string kind, string id, JsonNode? data, string? model = null)
+    {
+        if (!_options.CurrentValue.Monitor.Enabled) return;
         try
         {
-            await foreach (var line in _channel.Reader.ReadAllAsync(ct))
+            var line = BuildLine(kind, id, data, model);
+            _channel.Writer.TryWrite(line);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Monitor capture failed for {Kind} id={Id}; writing error line", kind, id);
+            try
             {
-                var today = DateOnly.FromDateTime(DateTime.Now);
-                var monitor = _options.CurrentValue.Monitor;
-
-                if (writer is null || today != currentDate || currentBytes >= monitor.LogMaxBytes)
+                var errLine = BuildLine("request.error", id, new JsonObject
                 {
-                    if (writer is not null)
-                    {
-                        await writer.FlushAsync(ct);
-                        await writer.DisposeAsync();
-                    }
+                    ["phase"] = "serialize",
+                    ["message"] = ex.Message
+                });
+                _channel.Writer.TryWrite(errLine);
+            }
+            catch { /* best effort */ }
+        }
+    }
 
-                    if (today != currentDate)
-                    {
-                        currentDate = today;
-                        rotationSuffix = 1;
-                    }
-                    else
-                    {
-                        rotationSuffix++;
-                    }
+    public JsonNode? CapBody(JsonNode? node)
+    {
+        if (node is null) return null;
+        var json = node.ToJsonString();
+        var maxBytes = _options.CurrentValue.Monitor.MaxBodyBytes;
+        if (json.Length <= maxBytes) return node;
+        return new JsonObject { ["__truncated"] = true, ["originalBytes"] = (long)json.Length };
+    }
 
-                    currentPath = BuildPath(logsDir, today, rotationSuffix);
-                    var fs = new FileStream(currentPath, FileMode.Append, FileAccess.Write, FileShare.Read);
-                    writer = new StreamWriter(fs) { AutoFlush = false };
-                    currentBytes = fs.Length;
-                    _logger.LogDebug("JSONL writer opened {Path}", currentPath);
-                }
+    public Channel<string> Subscribe()
+    {
+        var ch = Channel.CreateBounded<string>(new BoundedChannelOptions(512)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true
+        });
+        lock (_subscribersLock) _subscribers.Add(ch);
+        return ch;
+    }
 
-                await writer.WriteLineAsync(line.AsMemory(), ct);
-                currentBytes += line.Length + 1;
+    public void Unsubscribe(Channel<string> ch)
+    {
+        lock (_subscribersLock) _subscribers.Remove(ch);
+        ch.Writer.TryComplete();
+    }
 
+    private void PurgeOldFiles(string logsDir)
+    {
+        if (!Directory.Exists(logsDir)) return;
+        foreach (var file in Directory.EnumerateFiles(logsDir, "requests-*.jsonl"))
+        {
+            try { File.Delete(file); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Failed to delete old JSONL file {File}", file); }
+        }
+    }
+
+    private static string BuildLine(string kind, string id, JsonNode? data, string? model = null)
+    {
+        var obj = new JsonObject
+        {
+            ["id"] = id,
+            ["ts"] = DateTimeOffset.UtcNow.ToString("O"),
+            ["kind"] = kind
+        };
+        if (model is not null) obj["model"] = model;
+        if (data is not null) obj["data"] = data;
+        return obj.ToJsonString();
+    }
+
+    private void BroadcastToSubscribers(string line)
+    {
+        lock (_subscribersLock)
+        {
+            foreach (var sub in _subscribers)
+                sub.Writer.TryWrite(line);
+        }
+    }
+
+    private async Task RunAsync(string filePath)
+    {
+        StreamWriter? writer = null;
+        try
+        {
+            var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.Read);
+            writer = new StreamWriter(fs, System.Text.Encoding.UTF8) { AutoFlush = false };
+            _logger.LogDebug("JSONL writer opened {Path}", filePath);
+
+            await foreach (var line in _channel.Reader.ReadAllAsync(CancellationToken.None))
+            {
+                await writer.WriteLineAsync(line);
+                BroadcastToSubscribers(line);
                 if (_channel.Reader.Count == 0)
-                    await writer.FlushAsync(ct);
+                    await writer.FlushAsync();
             }
         }
-        catch (OperationCanceledException) { /* normal shutdown */ }
-        catch (Exception ex) { _logger.LogError(ex, "JSONL writer background task failed"); }
+        catch (Exception ex) { _logger.LogError(ex, "JSONL writer task failed"); }
         finally
         {
             if (writer is not null)
             {
-                try { await writer.FlushAsync(); } catch { /* best effort */ }
+                try { await writer.FlushAsync(); } catch { }
                 await writer.DisposeAsync();
             }
-        }
-    }
-
-    private async Task RunRetentionSweepAsync(CancellationToken ct)
-    {
-        await SweepAsync();
-        using var timer = new PeriodicTimer(TimeSpan.FromHours(1));
-        try
-        {
-            while (await timer.WaitForNextTickAsync(ct))
-                await SweepAsync();
-        }
-        catch (OperationCanceledException) { /* normal */ }
-    }
-
-    private async Task SweepAsync()
-    {
-        var retentionDays = _options.CurrentValue.Monitor.LogRetentionDays;
-        if (retentionDays == 0) return;
-
-        var logsDir = Path.Combine(_dataDir, "logs");
-        if (!Directory.Exists(logsDir)) return;
-
-        var cutoff = DateTime.UtcNow.AddDays(-retentionDays);
-        try
-        {
-            foreach (var file in Directory.EnumerateFiles(logsDir, "requests-*.jsonl"))
+            lock (_subscribersLock)
             {
-                if (File.GetCreationTimeUtc(file) < cutoff)
-                {
-                    File.Delete(file);
-                    _logger.LogInformation("Deleted old JSONL file: {File}", file);
-                }
+                foreach (var sub in _subscribers)
+                    sub.Writer.TryComplete();
+                _subscribers.Clear();
             }
         }
-        catch (Exception ex) { _logger.LogWarning(ex, "Retention sweep failed"); }
-        await Task.CompletedTask;
-    }
-
-    private static string BuildPath(string logsDir, DateOnly date, int suffix)
-    {
-        var dateStr = date.ToString("yyyy-MM-dd");
-        var filename = suffix == 1 ? $"requests-{dateStr}.jsonl" : $"requests-{dateStr}-{suffix}.jsonl";
-        return Path.Combine(logsDir, filename);
-    }
-
-
-    public async Task<RequestFullRecord?> FindByIdAsync(string id, CancellationToken ct = default)
-    {
-        var logsDir = Path.Combine(_dataDir, "logs");
-        if (!Directory.Exists(logsDir)) return null;
-
-        var files = Directory.GetFiles(logsDir, "requests-*.jsonl")
-            .OrderByDescending(f => f);
-
-        foreach (var file in files)
-        {
-            try
-            {
-                var lines = await File.ReadAllLinesAsync(file, ct);
-                foreach (var line in lines.Reverse())
-                {
-                    if (!line.Contains(id)) continue;
-                    try
-                    {
-                        using var doc = System.Text.Json.JsonDocument.Parse(line);
-                        if (!doc.RootElement.TryGetProperty("id", out var idEl) || idEl.GetString() != id) continue;
-                        if (!doc.RootElement.TryGetProperty("data", out var dataEl)) continue;
-                        return dataEl.Deserialize<RequestFullRecord>();
-                    }
-                    catch { /* malformed line */ }
-                }
-            }
-            catch { /* file read error */ }
-        }
-        return null;
-    }
-
-    public string? CurrentFilePath()
-    {
-        var logsDir = Path.Combine(_dataDir, "logs");
-        var today = DateOnly.FromDateTime(DateTime.Now);
-        var dateStr = today.ToString("yyyy-MM-dd");
-        // Find the highest-suffix file for today
-        if (!Directory.Exists(logsDir)) return null;
-        var files = Directory.GetFiles(logsDir, $"requests-{dateStr}*.jsonl")
-            .OrderByDescending(f => f).ToArray();
-        return files.Length > 0 ? files[0] : null;
     }
 }

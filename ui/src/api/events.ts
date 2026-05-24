@@ -1,23 +1,8 @@
-import type {
-  ReplaySnapshotEvent,
-  RequestReceivedEvent,
-  RequestTranslatedEvent,
-  FoundryRequestSentEvent,
-  FoundryChunkEvent,
-  FoundryCompleteEvent,
-  ResponseSentEvent,
-  SseErrorEvent,
-} from './contracts'
+import type { ReplayEvent, AppendEvent } from './contracts'
 
 export type SseEventMap = {
-  'replay.snapshot': ReplaySnapshotEvent
-  'request.received': RequestReceivedEvent
-  'request.translated': RequestTranslatedEvent
-  'foundry.request.sent': FoundryRequestSentEvent
-  'foundry.chunk': FoundryChunkEvent
-  'foundry.complete': FoundryCompleteEvent
-  'response.sent': ResponseSentEvent
-  'error': SseErrorEvent
+  'replay': ReplayEvent
+  'append': AppendEvent
 }
 
 type SseCallbacks = {
@@ -25,7 +10,6 @@ type SseCallbacks = {
 }
 
 export interface SseClientOptions {
-  since?: string
   onConnectionLost?: () => void
   onReconnected?: () => void
 }
@@ -39,12 +23,10 @@ export class SseClient {
   private paused = false
   private pauseQueue: Array<{ type: string; data: unknown }> = []
   private closed = false
-  private since: string | undefined
   private onConnectionLost: (() => void) | undefined
   private onReconnected: (() => void) | undefined
 
   constructor(options: SseClientOptions = {}) {
-    this.since = options.since
     this.onConnectionLost = options.onConnectionLost
     this.onReconnected = options.onReconnected
     this.connect()
@@ -74,14 +56,7 @@ export class SseClient {
   }
 
   private buildUrl(): string {
-    const params = new URLSearchParams()
-    if (this.lastEventId) {
-      // browser sends Last-Event-ID header automatically; also pass since for initial connect
-    } else if (this.since) {
-      params.set('since', this.since)
-    }
-    const qs = params.toString()
-    return `/api/admin/events${qs ? `?${qs}` : ''}`
+    return '/api/admin/monitor/events'
   }
 
   private connect(): void {
@@ -102,16 +77,7 @@ export class SseClient {
       setTimeout(() => this.connect(), 3000)
     }
 
-    const eventTypes: (keyof SseEventMap)[] = [
-      'replay.snapshot',
-      'request.received',
-      'request.translated',
-      'foundry.request.sent',
-      'foundry.chunk',
-      'foundry.complete',
-      'response.sent',
-      'error',
-    ]
+    const eventTypes: (keyof SseEventMap)[] = ['replay', 'append']
 
     for (const type of eventTypes) {
       this.es.addEventListener(type, (e: MessageEvent) => {
@@ -127,13 +93,12 @@ export class SseClient {
   }
 
   private isTerminal(type: string): boolean {
-    return type === 'foundry.complete' || type === 'response.sent' || type === 'error'
+    return type === 'replay'
   }
 
   private handleEvent(type: string, data: unknown): void {
     if (this.paused) {
       if (!this.isTerminal(type) && this.pauseQueue.length >= PAUSE_QUEUE_MAX) {
-        // drop oldest non-terminal
         const idx = this.pauseQueue.findIndex(e => !this.isTerminal(e.type))
         if (idx !== -1) this.pauseQueue.splice(idx, 1)
       }

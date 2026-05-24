@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Claude2Foundry.Admin;
 using Claude2Foundry.Backend;
 using Claude2Foundry.Config;
@@ -76,24 +77,13 @@ builder.Services.AddSingleton<ConfigWriter>();
 builder.Services.AddSingleton<IExitSink, EnvironmentExitSink>();
 builder.Services.AddSingleton<RestartCoordinator>();
 builder.Services.AddSingleton<FoundryHealthProbe>();
-builder.Services.AddSingleton<FullBodyCache>();
-builder.Services.AddSingleton(sp =>
+builder.Services.AddSingleton<JsonlWriter>(sp =>
 {
     var options = sp.GetRequiredService<IOptionsMonitor<ProxyConfig>>();
     var logger = sp.GetRequiredService<ILogger<JsonlWriter>>();
-    var writer = new JsonlWriter(dataDir, options, logger);
-    return writer;
+    return new JsonlWriter(dataDir, options, logger);
 });
-builder.Services.AddSingleton<CaptureModeController>();
-builder.Services.AddSingleton(sp =>
-{
-    var jsonlWriter = sp.GetRequiredService<JsonlWriter>();
-    var bodyCache = sp.GetRequiredService<FullBodyCache>();
-    var pipelineLogger = sp.GetRequiredService<ILogger<RequestCapturePipeline>>();
-    return new RequestCapturePipeline(jsonlWriter, bodyCache, pipelineLogger);
-});
-builder.Services.AddSingleton<IRequestCaptureSink>(sp =>
-    sp.GetRequiredService<RequestCapturePipeline>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<JsonlWriter>());
 builder.Services.AddSingleton<TestRequestRunner>();
 
 builder.Services.ConfigureHttpJsonOptions(opts =>
@@ -102,23 +92,6 @@ builder.Services.ConfigureHttpJsonOptions(opts =>
 });
 
 var app = builder.Build();
-
-// Start background pipeline services
-var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
-var pipeline = app.Services.GetRequiredService<RequestCapturePipeline>();
-var jsonlWriter = app.Services.GetRequiredService<JsonlWriter>();
-
-lifetime.ApplicationStarted.Register(() =>
-{
-    pipeline.Start(lifetime.ApplicationStopping);
-    jsonlWriter.Start(lifetime.ApplicationStopping);
-});
-
-lifetime.ApplicationStopping.Register(() =>
-{
-    pipeline.DrainAsync().GetAwaiter().GetResult();
-    jsonlWriter.DrainAsync().GetAwaiter().GetResult();
-});
 
 try { _ = app.Services.GetRequiredService<ProxyConfig>(); }
 catch (Exception ex) { app.Logger.LogCritical(ex, "Startup failed"); Environment.Exit(1); }
@@ -200,7 +173,7 @@ app.MapPost("/v1/messages", async (
     StreamTranslator streamT,
     FoundryClient foundry,
     IOptionsMonitor<ProxyConfig> optionsMonitor,
-    IRequestCaptureSink sink,
+    JsonlWriter jsonlWriter,
     RestartCoordinator restartCoordinator,
     ILogger<Program> logger) =>
 {
@@ -226,40 +199,49 @@ app.MapPost("/v1/messages", async (
 
     logger.LogInformation("=> req={CorrelationId} POST /v1/messages stream={Stream}", correlationId, req.Stream == true);
 
-    // Emit request.received
-    sink.Emit(new RequestReceivedEvent(
-        correlationId,
-        DateTimeOffset.UtcNow,
-        req.Model,
-        req.Stream == true,
-        RequestRecordBuilder.RedactHeaders(ctx.Request.Headers),
-        JsonSnapshot.Take(req)));
+    // request.received
+    try
+    {
+        var reqNode = JsonNode.Parse(JsonSerializer.Serialize(req, AppJsonSerializerContext.Default.AnthropicMessagesRequest));
+        var headersNode = JsonNode.Parse(JsonSerializer.Serialize(RequestRecordBuilder.RedactHeaders(ctx.Request.Headers)));
+        jsonlWriter.Enqueue("request.received", correlationId, new JsonObject
+        {
+            ["anthropicBody"] = jsonlWriter.CapBody(reqNode),
+            ["headers"] = headersNode
+        }, req.Model);
+    }
+    catch (Exception ex) { logger.LogWarning(ex, "req={CorrelationId} Monitor: request.received capture failed", correlationId); }
 
     ChatCompletionRequest openaiReq;
     string resolvedTarget;
     try { (openaiReq, resolvedTarget) = reqT.Translate(req, snapshot); }
     catch (AdapterException ex)
     {
-        sink.Emit(new CaptureErrorEvent(correlationId, "translation", "Adapter", ex.Message));
-        sink.Finalize(correlationId);
+        jsonlWriter.Enqueue("request.error", correlationId, new JsonObject
+            { ["phase"] = "translation", ["message"] = ex.Message });
         return ErrorResult(ErrorMapping.AdapterError("invalid_request_error", ex.Message), 400, ctx);
     }
 
-    // Emit request.translated
-    sink.Emit(new RequestTranslatedEvent(correlationId, resolvedTarget, JsonSnapshot.Take(openaiReq)));
+    // request.translated
+    try
+    {
+        var openaiNode = JsonNode.Parse(JsonSerializer.Serialize(openaiReq, AppJsonSerializerContext.Default.ChatCompletionRequest));
+        jsonlWriter.Enqueue("request.translated", correlationId, new JsonObject
+        {
+            ["openaiBody"] = jsonlWriter.CapBody(openaiNode),
+            ["mappedModel"] = resolvedTarget
+        });
+    }
+    catch (Exception ex) { logger.LogWarning(ex, "req={CorrelationId} Monitor: request.translated capture failed", correlationId); }
 
     if (logger.IsEnabled(LogLevel.Debug))
         logger.LogDebug("req={CorrelationId} OpenAI request: {Body}", correlationId,
             JsonSerializer.Serialize(openaiReq, AppJsonSerializerContext.Default.ChatCompletionRequest));
 
     var idleTimeout = TimeSpan.FromSeconds(snapshot.Timeouts.StreamIdleSeconds);
-    int chunkSeq = 0;
 
     if (req.Stream == true)
     {
-        // Emit foundry.request.sent
-        sink.Emit(new FoundrySentEvent(correlationId, DateTimeOffset.UtcNow));
-
         var upstream = foundry.StreamAsync(openaiReq, correlationId, idleTimeout, ct);
         var enumerator = upstream.GetAsyncEnumerator(ct);
         bool hasFirst;
@@ -268,16 +250,16 @@ app.MapPost("/v1/messages", async (
         {
             await enumerator.DisposeAsync();
             var (_, httpStatus) = ErrorMapping.MapFoundryStatus(ex.Status);
-            sink.Emit(new CaptureErrorEvent(correlationId, "foundry-sent", "Foundry", ex.FoundryMessage));
-            sink.Finalize(correlationId);
+            jsonlWriter.Enqueue("request.error", correlationId, new JsonObject
+                { ["phase"] = "foundry-sent", ["message"] = ex.FoundryMessage });
             return ErrorResult(ErrorMapping.FoundryError(ex.Status, ex.FoundryMessage), httpStatus, ctx);
         }
         catch (Exception ex)
         {
             await enumerator.DisposeAsync();
             logger.LogError(ex, "req={CorrelationId} Stream open failed", correlationId);
-            sink.Emit(new CaptureErrorEvent(correlationId, "foundry-sent", "Adapter", ex.Message));
-            sink.Finalize(correlationId);
+            jsonlWriter.Enqueue("request.error", correlationId, new JsonObject
+                { ["phase"] = "foundry-sent", ["message"] = ex.Message });
             return ErrorResult(ErrorMapping.AdapterError("api_error", $"Internal error ({correlationId})"), 500, ctx);
         }
 
@@ -286,7 +268,6 @@ app.MapPost("/v1/messages", async (
         ctx.Response.Headers["X-Accel-Buffering"] = "no";
         ctx.Response.Headers["x-c2f-request-id"] = correlationId;
 
-        // Accumulate raw OpenAI chunks and Anthropic SSE frames for capture
         var rawChunks = new List<ChatCompletionChunk>();
         var sseFrames = new List<string>();
 
@@ -296,43 +277,62 @@ app.MapPost("/v1/messages", async (
             {
                 await foreach (var frame in streamT.Translate(TapChunks(Reattach(enumerator.Current, enumerator, ct), rawChunks), req, resolvedTarget, ct, snapshot))
                 {
-                    sink.Emit(new FoundryChunkEvent(correlationId, chunkSeq++, null, null, null));
                     sseFrames.Add(frame);
                     await ctx.Response.WriteAsync(frame, ct);
                     await ctx.Response.Body.FlushAsync(ct);
                 }
             }
-            // Emit captured raw OpenAI chunks
-            sink.Emit(new FoundryResponseReceivedEvent(correlationId, rawChunks.Count > 0 ? JsonSnapshot.Take(rawChunks) : null));
-            // Emit assembled: store SSE frames so the drawer can show them
-            sink.Emit(new ResponseSentEvent(correlationId, (int)sw.ElapsedMilliseconds,
-                sseFrames.Count > 0 ? JsonSnapshot.Take(new { frames = sseFrames }) : null));
-            sink.Finalize(correlationId);
+
+            // response.received: assembled OpenAI chunks
+            try
+            {
+                var chunksNode = rawChunks.Count > 0
+                    ? JsonNode.Parse(JsonSerializer.Serialize(rawChunks))
+                    : null;
+                jsonlWriter.Enqueue("response.received", correlationId, new JsonObject
+                {
+                    ["openaiResponse"] = jsonlWriter.CapBody(chunksNode),
+                    ["latencyMs"] = (int)sw.ElapsedMilliseconds
+                });
+            }
+            catch (Exception ex) { logger.LogWarning(ex, "req={CorrelationId} Monitor: response.received capture failed", correlationId); }
+
+            // response.sent: assembled SSE frames
+            try
+            {
+                jsonlWriter.Enqueue("response.sent", correlationId, new JsonObject
+                {
+                    ["anthropicResponse"] = sseFrames.Count > 0
+                        ? (JsonNode)new JsonObject { ["frames"] = JsonNode.Parse(JsonSerializer.Serialize(sseFrames)) }
+                        : null,
+                    ["elapsedMs"] = (int)sw.ElapsedMilliseconds
+                });
+            }
+            catch (Exception ex) { logger.LogWarning(ex, "req={CorrelationId} Monitor: response.sent capture failed", correlationId); }
         }
         catch (OperationCanceledException)
         {
             logger.LogInformation("req={CorrelationId} Client disconnected", correlationId);
-            sink.Finalize(correlationId, new OperationCanceledException("Client disconnected"));
         }
         catch (TimeoutException ex)
         {
             logger.LogError("req={CorrelationId} {Msg}", correlationId, ex.Message);
             await ctx.Response.WriteAsync(ErrorMapping.SseErrorFrame(ErrorMapping.AdapterError("api_error", ex.Message)), CancellationToken.None);
-            sink.Emit(new CaptureErrorEvent(correlationId, "streaming", "Adapter", ex.Message));
-            sink.Finalize(correlationId);
+            jsonlWriter.Enqueue("request.error", correlationId, new JsonObject
+                { ["phase"] = "streaming", ["message"] = ex.Message });
         }
         catch (FoundryHttpException ex)
         {
             await ctx.Response.WriteAsync(ErrorMapping.SseErrorFrame(ErrorMapping.FoundryError(ex.Status, ex.FoundryMessage)), CancellationToken.None);
-            sink.Emit(new CaptureErrorEvent(correlationId, "streaming", "Foundry", ex.FoundryMessage));
-            sink.Finalize(correlationId);
+            jsonlWriter.Enqueue("request.error", correlationId, new JsonObject
+                { ["phase"] = "streaming", ["message"] = ex.FoundryMessage });
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "req={CorrelationId} Mid-stream error", correlationId);
             await ctx.Response.WriteAsync(ErrorMapping.SseErrorFrame(ErrorMapping.AdapterError("api_error", $"Internal error ({correlationId})")), CancellationToken.None);
-            sink.Emit(new CaptureErrorEvent(correlationId, "streaming", "Adapter", ex.Message));
-            sink.Finalize(correlationId);
+            jsonlWriter.Enqueue("request.error", correlationId, new JsonObject
+                { ["phase"] = "streaming", ["message"] = ex.Message });
         }
         finally { await enumerator.DisposeAsync(); }
 
@@ -341,43 +341,44 @@ app.MapPost("/v1/messages", async (
     }
     else
     {
-        // Emit foundry.request.sent
-        sink.Emit(new FoundrySentEvent(correlationId, DateTimeOffset.UtcNow));
-
         ChatCompletionResponse upstream;
         try { upstream = await foundry.PostAsync(openaiReq, correlationId, ct); }
         catch (FoundryHttpException ex)
         {
             var (_, httpStatus) = ErrorMapping.MapFoundryStatus(ex.Status);
             logger.LogInformation("<= req={CorrelationId} status={Status} elapsed={Elapsed}ms stream=false", correlationId, httpStatus, sw.ElapsedMilliseconds);
-            sink.Emit(new CaptureErrorEvent(correlationId, "foundry-sent", "Foundry", ex.FoundryMessage));
-            sink.Finalize(correlationId);
+            jsonlWriter.Enqueue("request.error", correlationId, new JsonObject
+                { ["phase"] = "foundry-sent", ["message"] = ex.FoundryMessage });
             return ErrorResult(ErrorMapping.FoundryError(ex.Status, ex.FoundryMessage), httpStatus, ctx);
         }
         catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
         {
             logger.LogError(ex, "req={CorrelationId} Outbound timeout", correlationId);
-            sink.Emit(new CaptureErrorEvent(correlationId, "foundry-sent", "Adapter", "timeout"));
-            sink.Finalize(correlationId);
+            jsonlWriter.Enqueue("request.error", correlationId, new JsonObject
+                { ["phase"] = "foundry-sent", ["message"] = "timeout" });
             return ErrorResult(ErrorMapping.AdapterError("api_error", $"Adapter timeout after {snapshot.Timeouts.OutboundTotalSeconds}s"), 500, ctx);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "req={CorrelationId} Foundry call failed", correlationId);
-            sink.Emit(new CaptureErrorEvent(correlationId, "foundry-sent", "Adapter", ex.Message));
-            sink.Finalize(correlationId);
+            jsonlWriter.Enqueue("request.error", correlationId, new JsonObject
+                { ["phase"] = "foundry-sent", ["message"] = ex.Message });
             return ErrorResult(ErrorMapping.AdapterError("api_error", $"Internal error ({correlationId})"), 500, ctx);
         }
 
-        // Emit raw Foundry (OpenAI) response
-        sink.Emit(new FoundryResponseReceivedEvent(correlationId, JsonSnapshot.Take(upstream)));
-
-        // Emit foundry.complete
-        var usage = upstream.Usage;
-        sink.Emit(new FoundryCompleteEvent(
-            correlationId,
-            new UsageDto { Input = usage?.PromptTokens ?? 0, Output = usage?.CompletionTokens ?? 0 },
-            upstream.Choices.FirstOrDefault()?.FinishReason ?? "stop"));
+        // response.received
+        try
+        {
+            var upstreamNode = JsonNode.Parse(JsonSerializer.Serialize(upstream, AppJsonSerializerContext.Default.ChatCompletionResponse));
+            jsonlWriter.Enqueue("response.received", correlationId, new JsonObject
+            {
+                ["openaiResponse"] = jsonlWriter.CapBody(upstreamNode),
+                ["latencyMs"] = (int)sw.ElapsedMilliseconds,
+                ["promptTokens"] = upstream.Usage?.PromptTokens,
+                ["completionTokens"] = upstream.Usage?.CompletionTokens
+            });
+        }
+        catch (Exception ex) { logger.LogWarning(ex, "req={CorrelationId} Monitor: response.received capture failed", correlationId); }
 
         if (logger.IsEnabled(LogLevel.Debug))
             logger.LogDebug("req={CorrelationId} OpenAI response: {Body}", correlationId,
@@ -387,13 +388,22 @@ app.MapPost("/v1/messages", async (
         try { anthropicResp = respT.Translate(upstream, req, resolvedTarget, snapshot); }
         catch (AdapterException ex)
         {
-            sink.Emit(new CaptureErrorEvent(correlationId, "translation", "Adapter", ex.Message));
-            sink.Finalize(correlationId);
+            jsonlWriter.Enqueue("request.error", correlationId, new JsonObject
+                { ["phase"] = "translation", ["message"] = ex.Message });
             return ErrorResult(ErrorMapping.AdapterError("api_error", ex.Message), 500, ctx);
         }
 
-        sink.Emit(new ResponseSentEvent(correlationId, (int)sw.ElapsedMilliseconds, JsonSnapshot.Take(anthropicResp)));
-        sink.Finalize(correlationId);
+        // response.sent
+        try
+        {
+            var respNode = JsonNode.Parse(JsonSerializer.Serialize(anthropicResp, AppJsonSerializerContext.Default.AnthropicMessagesResponse));
+            jsonlWriter.Enqueue("response.sent", correlationId, new JsonObject
+            {
+                ["anthropicResponse"] = jsonlWriter.CapBody(respNode),
+                ["elapsedMs"] = (int)sw.ElapsedMilliseconds
+            });
+        }
+        catch (Exception ex) { logger.LogWarning(ex, "req={CorrelationId} Monitor: response.sent capture failed", correlationId); }
 
         logger.LogInformation("<= req={CorrelationId} status=200 elapsed={Elapsed}ms in={In} out={Out} stream=false",
             correlationId, sw.ElapsedMilliseconds, anthropicResp.Usage.InputTokens, anthropicResp.Usage.OutputTokens);

@@ -52,8 +52,6 @@ public sealed class AnthropicMessagesRequest
     [JsonPropertyName("disable_parallel_tool_use")]
     public bool? DisableParallelToolUse { get; init; }
 
-    [JsonExtensionData]
-    public JsonObject? ExtensionData { get; set; }
 }
 
 public sealed class AnthropicCountTokensRequest
@@ -183,8 +181,6 @@ public sealed class AnthropicMetadata
     [JsonPropertyName("user_id")]
     public string? UserId { get; init; }
 
-    [JsonExtensionData]
-    public JsonObject? ExtensionData { get; set; }
 }
 
 // Response types

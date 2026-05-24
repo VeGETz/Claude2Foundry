@@ -1,5 +1,3 @@
-// Frozen phase-0 contract types — extend only, never delete or rename.
-
 // ---- Config (PascalCase — mirrors appsettings.json / json-schema.md) -------
 
 export interface ProxyConfig {
@@ -24,9 +22,8 @@ export interface TimeoutsConfig {
 }
 
 export interface MonitorConfig {
-  CaptureMode: 'hybrid' | 'full'
-  LogMaxBytes: number
-  LogRetentionDays: number
+  Enabled: boolean
+  MaxBodyBytes: number
 }
 
 // ---- API responses (camelCase — mirrors http-routes.md) --------------------
@@ -60,9 +57,8 @@ export interface HealthResponse {
   foundry: FoundryHealth
   config: ConfigResponse
   inFlight: number
-  ringBuffer: RingBufferInfo
-  capture: CaptureInfo
-  logFile: LogFileInfo
+  monitorEnabled: boolean
+  logFile: LogFileInfo | null
   wrapperPresent: boolean
 }
 
@@ -74,30 +70,9 @@ export interface FoundryHealth {
   lastFailureMessage: string | null
 }
 
-export interface RingBufferInfo {
-  occupancy: number
-  capacity: number
-}
-
-export interface CaptureInfo {
-  mode: 'hybrid' | 'full'
-  scope: 'session' | 'persistent'
-}
-
 export interface LogFileInfo {
   path: string
   sizeBytes: number
-}
-
-export interface CaptureModeRequest {
-  mode: 'hybrid' | 'full'
-  scope: 'session' | 'persistent'
-}
-
-export interface CaptureModeResponse {
-  ok: boolean
-  mode: string
-  scope: string
 }
 
 // ---- Error -----------------------------------------------------------------
@@ -110,102 +85,65 @@ export interface AdminError {
   }
 }
 
-// ---- SSE event payloads (camelCase — mirrors sse-events.md) ----------------
+// ---- Monitor list / detail -------------------------------------------------
 
-export interface RequestSnapshotRecord {
+export interface MonitorListItem {
   id: string
   ts: string
-  originalModel: string
-  resolvedModel: string
-  status: 'received' | 'translated' | 'foundry-sent' | 'streaming' | 'complete' | 'error'
-  elapsedMs: number | null
-  usage: { input: number; output: number } | null
+  model: string | null
+  originalModel: string | null
+  mappedModel: string | null
+  status: 'ok' | 'error' | 'running'
+  latencyMs: number | null
+  promptTokens: number | null
+  completionTokens: number | null
+}
+
+export interface MonitorListResponse {
+  items: MonitorListItem[]
+}
+
+export interface MonitorDetail {
+  id: string
+  ts: string
+  model: string | null
+  status: string
+  latencyMs: number | null
+  anthropicBody: unknown | null
+  openaiBody: unknown | null
+  openaiResponse: unknown | null
+  anthropicResponse: unknown | null
+  headers: unknown | null
+  error: unknown | null
+}
+
+// ---- UI row (live + historical) --------------------------------------------
+
+export interface MonitorRow {
+  id: string
+  ts: string
+  model: string | null
+  originalModel: string | null
+  mappedModel: string | null
+  status: 'running' | 'ok' | 'error'
+  latencyMs: number | null
+  promptTokens: number | null
+  completionTokens: number | null
   error: string | null
-  phase: string
 }
 
-export interface ReplaySnapshotEvent {
-  records: RequestSnapshotRecord[]
+// ---- SSE event payloads ----------------------------------------------------
+
+export interface ReplayEvent {
+  items: MonitorListItem[]
 }
 
-export interface RequestSummary {
+export interface AppendEvent {
   id: string
   ts: string
-  originalModel: string
-  stream: boolean
-  bodyPreview?: unknown
-  headers: Record<string, string>
-}
-
-export interface RequestReceivedEvent {
-  id: string
-  ts: string
-  originalModel: string
-  stream: boolean
-  bodyPreview?: unknown
-  headers: Record<string, string>
-}
-
-export interface RequestTranslatedEvent {
-  id: string
-  resolvedModel: string
-  openaiBody?: unknown
-}
-
-export interface FoundryRequestSentEvent {
-  id: string
-  ts: string
-}
-
-export interface FoundryChunkEvent {
-  id: string
-  seq: number
-  deltaText?: string
-  deltaToolCall?: unknown
-  reasoningDelta?: string
-}
-
-export interface FoundryCompleteEvent {
-  id: string
-  usage: { input: number; output: number }
-  finishReason: string
-}
-
-export interface ResponseSentEvent {
-  id: string
-  elapsedMs: number
-  anthropicAssembled?: unknown
-}
-
-export interface SseErrorEvent {
-  id: string
-  phase: string
-  origin: 'Adapter' | 'Foundry'
-  message: string
-}
-
-export interface RequestFullRecord {
-  id: string
-  anthropicBody?: unknown
-  openaiBody?: unknown
-  responseBody?: unknown
-  headers: Record<string, string>
-  phase: string
-}
-
-// ---- Extended RequestSummary (full replay.snapshot shape) ------------------
-
-export interface RequestSummaryFull {
-  id: string
-  ts: string
-  originalModel: string
-  resolvedModel: string
-  status: 'received' | 'translated' | 'foundry-sent' | 'streaming' | 'complete' | 'error'
-  elapsedMs: number | null
-  usage: { input: number; output: number } | null
-  error: string | null
-  phase: string
-  stream: boolean
+  kind: string
+  model?: string
+  data?: Record<string, unknown>
 }
 
 // ---- Test page -------------------------------------------------------------
@@ -223,25 +161,3 @@ export interface TestResponse {
   openaiResponse: unknown
   elapsedMs: number
 }
-
-// ---- Full body record (discriminated union) --------------------------------
-
-export interface RequestFullBody {
-  expired: false
-  id: string
-  phase: string
-  anthropicBody: unknown | null
-  openaiBody: unknown | null
-  responseBody: unknown | null
-  /** Contract amendment authorized by Tech Lead — pending backend impl in phase 1 PR;
-   *  GET /api/admin/events/full/{id} will surface this once Engineer A updates
-   *  the FullBodyCache/JSONL reader. Until then, null for historical entries. */
-  anthropicAssembled: unknown | null
-  headers: Record<string, string>
-}
-
-export interface RequestExpired {
-  expired: true
-}
-
-export type RequestFullRecordResult = RequestFullBody | RequestExpired
