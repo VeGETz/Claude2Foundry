@@ -18,7 +18,15 @@ public static class JsonSnapshot
     public static object? Take(object? source)
     {
         if (source is null) return null;
-        var json = JsonSerializer.Serialize(source);
-        return JsonNode.Parse(json);
+        try
+        {
+            var json = JsonSerializer.Serialize(source);
+            return JsonNode.Parse(json);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[JsonSnapshot] capture failed: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
     }
 }
